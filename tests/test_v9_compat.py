@@ -42,28 +42,60 @@ def test_new_s11_routes_are_registered(app_client):
         assert p in paths
 
 
-def test_v1_providers_shape_unchanged(app_client):
-    body = app_client.get("/v1/providers").json()
+def test_v1_providers_shape_unchanged(app_client, install_token):
+    headers = {"Authorization": f"Bearer {install_token}"}
+    r = app_client.get("/v1/providers", headers=headers)
+    assert r.status_code == 200
+    body = r.json()
     # V9 shape: order, providers, shortcuts, limits, models
     for k in ("order", "providers", "shortcuts", "limits", "models"):
         assert k in body
 
 
-def test_v1_status_shape_unchanged(app_client):
-    body = app_client.get("/v1/status").json()
+def test_v1_status_shape_unchanged(app_client, install_token):
+    headers = {"Authorization": f"Bearer {install_token}"}
+    r = app_client.get("/v1/status", headers=headers)
+    assert r.status_code == 200
+    body = r.json()
     for k in ("order", "live", "today", "limits"):
         assert k in body
 
 
-def test_v1_capabilities_returns_per_provider_caps(app_client):
-    body = app_client.get("/v1/capabilities").json()
+def test_v1_capabilities_returns_per_provider_caps(app_client, install_token):
+    headers = {"Authorization": f"Bearer {install_token}"}
+    r = app_client.get("/v1/capabilities", headers=headers)
+    assert r.status_code == 200
+    body = r.json()
     # Even with zero providers wired, the shape must be a dict.
     assert isinstance(body, dict)
 
 
-def test_v1_cost_by_agent_returns_dict(app_client):
-    body = app_client.get("/v1/cost/by_agent").json()
+def test_v1_cost_by_agent_returns_dict(app_client, install_token):
+    headers = {"Authorization": f"Bearer {install_token}"}
+    r = app_client.get("/v1/cost/by_agent", headers=headers)
+    assert r.status_code == 200
+    body = r.json()
     assert isinstance(body, dict)
+
+
+def test_read_endpoints_enforce_auth(app_client):
+    endpoints = [
+        "/v1/embedders",
+        "/v1/cost/by_agent",
+        "/v1/providers",
+        "/v1/capabilities",
+        "/v1/status",
+        "/v1/routers",
+        "/v1/calls",
+    ]
+    for url in endpoints:
+        # Missing token -> 401
+        r = app_client.get(url)
+        assert r.status_code == 401, f"{url} did not return 401 on missing token"
+
+        # Bad token -> 403
+        r = app_client.get(url, headers={"Authorization": "Bearer badtoken"})
+        assert r.status_code == 403, f"{url} did not return 403 on bad token"
 
 
 def test_chat_request_rejects_bad_provider(app_client):
@@ -92,3 +124,32 @@ def test_healthz(app_client):
     r = app_client.get("/healthz")
     assert r.status_code == 200
     assert r.json()["ok"] is True
+
+
+def test_docs_disabled_in_production(monkeypatch):
+    import sys
+    import importlib
+    from fastapi.testclient import TestClient
+
+    # Set env to production
+    monkeypatch.setenv("GLC_ENV", "production")
+
+    # Reload glc.main to apply environment changes
+    import glc.main
+    importlib.reload(glc.main)
+
+    client = TestClient(glc.main.app)
+
+    # Ensure docs endpoints are disabled (should return 404)
+    assert client.get("/docs").status_code == 404
+    assert client.get("/redoc").status_code == 404
+    assert client.get("/openapi.json").status_code == 404
+
+    # Ensure index page does not mention /docs
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "/docs" not in r.text
+
+    # Restore environment and reload to avoid breaking other tests
+    monkeypatch.setenv("GLC_ENV", "development")
+    importlib.reload(glc.main)

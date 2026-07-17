@@ -73,7 +73,15 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="GLC v1 — Gateway for LLMs and Channels", lifespan=lifespan)
+is_dev = os.getenv("GLC_ENV") == "development"
+
+app = FastAPI(
+    title="GLC v1 — Gateway for LLMs and Channels",
+    lifespan=lifespan,
+    docs_url="/docs" if is_dev else None,
+    redoc_url="/redoc" if is_dev else None,
+    openapi_url="/openapi.json" if is_dev else None,
+)
 
 app.include_router(chat_route.router)
 app.include_router(transcribe_route.router)
@@ -84,11 +92,12 @@ app.include_router(channels_route.router)
 
 @app.get("/", response_class=HTMLResponse)
 async def index() -> str:
+    docs_msg = "<p>Open <code>/docs</code> for the OpenAPI explorer.</p>" if is_dev else ""
     return (
         "<html><body style='font-family:sans-serif;max-width:680px;margin:2em auto'>"
         "<h1>GLC v1</h1>"
         "<p>Gateway for LLMs and Channels — Session 11 scaffold.</p>"
-        "<p>Open <code>/docs</code> for the OpenAPI explorer.</p>"
+        f"{docs_msg}"
         "<p>Channel adapters connect over <code>WS /v1/channels/&lt;name&gt;</code>."
         " V9 callers should point at this port unchanged: chat, vision, embed,"
         " batch, cost-by-agent, providers, capabilities, status, calls."

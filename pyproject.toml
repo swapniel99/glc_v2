@@ -16,6 +16,7 @@ dependencies = [
     "modal>=1.5.1",
     "numpy>=2.4.6",
     "kokoro>=0.9.4",
+    "rich<15.0.0",
 ]
 
 [dependency-groups]

@@ -1,10 +1,10 @@
 # Session 12 Assignment: Migrate, Harden, and Hunt
 
-You take the glc_v1 gateway, run it on Modal yourself, fix the security issues the session hands you, and then find new ones. You work alone, on your own Modal account.
+You take the `glc_v2` gateway, run it on Modal yourself, fix the security issues the session hands you, and then find new ones. You work alone, on your own Modal account.
 
 ## Setup (do this first)
 
-- Clone `glc_v1` and create your own Modal account.
+- Clone `glc_v2` and create your own Modal account.
 - Use **mock keys only**. Never put real provider keys on Modal.
 - One deployment per student, scale-to-zero, so you stay on the free tier.
 - The migration steps are in Session 12, Section 6 (the `modal_app.py` wrapper, the Secret, the deploy). Confirm your gateway is live with `curl <url>/healthz`.
@@ -22,7 +22,7 @@ For each finding:
 2. Fix it. Make a commit that names the invariant (Section 4) it broke and shows the fix.
 3. Re-run the reproduction and confirm the attack now fails.
 
-Deliverable: your migrated, hardened `glc_v1` repository, plus a `FINDINGS.md` that lists each finding, the invariant it broke, and your fix. Part 1 is the floor. A submission that does not clear it does not score.
+Deliverable: your migrated, hardened `glc_v2` repository, plus a `FINDINGS.md` that lists each finding, the invariant it broke, and your fix. Part 1 is the floor. A submission that does not clear it does not score.
 
 ## Part 2: find something new (100 points each)
 

@@ -26,6 +26,7 @@ dev = [
     "pytest-cov>=4.1",
     "ruff>=0.6",
     "mypy>=1.10",
+    "isort>=8.0.1",
 ]
 
 [project.scripts]

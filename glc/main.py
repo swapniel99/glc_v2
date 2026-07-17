@@ -111,6 +111,16 @@ async def healthz():
     return {"ok": True, "port": PORT}
 
 
+@app.get("/debug")
+async def debug_info():
+    import inspect
+    from glc.routes import chat
+    return {
+        "file": chat.__file__,
+        "source": inspect.getsource(chat.status),
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
 

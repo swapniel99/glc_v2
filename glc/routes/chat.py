@@ -18,11 +18,21 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Header
 from fastapi.responses import StreamingResponse
 from jsonschema import Draft202012Validator, ValidationError
 
 from glc import db
+from glc.config import get_or_create_install_token
+
+
+def _require_token(authorization: str | None) -> None:
+    expected = get_or_create_install_token()
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "missing bearer token (Authorization: Bearer <install_token>)")
+    presented = authorization.removeprefix("Bearer ").strip()
+    if presented != expected:
+        raise HTTPException(403, "install token mismatch")
 from glc import providers as P
 from glc.llm_schemas import (
     BatchChatRequest,
@@ -740,7 +750,8 @@ async def embed(req: EmbedRequest, request: Request):
 
 
 @router.get("/v1/embedders")
-async def list_embedders(request: Request):
+async def list_embedders(request: Request, authorization: str | None = Header(default=None)):
+    _require_token(authorization)
     from glc import embedders as E
 
     state = request.app.state
@@ -756,7 +767,12 @@ async def list_embedders(request: Request):
 
 
 @router.get("/v1/cost/by_agent")
-async def cost_by_agent(session: str | None = None, agent: str | None = None):
+async def cost_by_agent(
+    session: str | None = None,
+    agent: str | None = None,
+    authorization: str | None = Header(default=None),
+):
+    _require_token(authorization)
     from glc import pricing as _pricing
 
     raw = db.by_agent(session=session)
@@ -773,7 +789,8 @@ async def cost_by_agent(session: str | None = None, agent: str | None = None):
 
 
 @router.get("/v1/providers")
-async def list_providers(request: Request):
+async def list_providers(request: Request, authorization: str | None = Header(default=None)):
+    _require_token(authorization)
     r = request.app.state.router
     return {
         "order": r.order,
@@ -785,7 +802,8 @@ async def list_providers(request: Request):
 
 
 @router.get("/v1/capabilities")
-async def capabilities(request: Request):
+async def capabilities(request: Request, authorization: str | None = Header(default=None)):
+    _require_token(authorization)
     r = request.app.state.router
     out = {}
     for name, p in r.providers.items():
@@ -804,7 +822,8 @@ async def capabilities(request: Request):
 
 
 @router.get("/v1/status")
-async def status(request: Request):
+async def status(request: Request, authorization: str | None = Header(default=None)):
+    _require_token(authorization)
     r = request.app.state.router
     return {
         "order": r.order,
@@ -815,7 +834,8 @@ async def status(request: Request):
 
 
 @router.get("/v1/routers")
-async def routers(request: Request):
+async def routers(request: Request, authorization: str | None = Header(default=None)):
+    _require_token(authorization)
     rp = request.app.state.router_pool
     return {
         "order": rp.order,
@@ -829,5 +849,11 @@ async def routers(request: Request):
 
 
 @router.get("/v1/calls")
-async def calls(limit: int = 100, provider: str | None = None, status: str | None = None):
+async def calls(
+    limit: int = 100,
+    provider: str | None = None,
+    status: str | None = None,
+    authorization: str | None = Header(default=None),
+):
+    _require_token(authorization)
     return db.recent(limit=limit, provider=provider, status=status)

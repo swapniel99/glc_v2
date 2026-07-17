@@ -37,7 +37,7 @@ image = (
         "jsonschema>=4.21",
         "pyyaml>=6.0",
         "websockets>=12.0",
-        "twilio>=9.0"
+        "twilio>=9.0",
     )
     .env({"GLC_CONFIG_DIR": "/data/glc"})
     .add_local_dir(str(LOCAL_GLC), remote_path="/root/glc")

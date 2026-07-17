@@ -27,7 +27,7 @@ LOCAL_GLC = Path(__file__).parent / "glc"
 # Volume mount so all databases land on persistent storage instead of the
 # throwaway container filesystem.
 image = (
-    modal.Image.debian_slim(python_version="3.13")
+    modal.Image.debian_slim(python_version="3.12")
     .pip_install_from_pyproject("pyproject.toml")
     .env({"GLC_CONFIG_DIR": "/data/glc"})
     .add_local_dir(str(LOCAL_GLC), remote_path="/root/glc")

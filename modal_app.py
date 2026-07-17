@@ -63,19 +63,10 @@ llm_secret = modal.Secret.from_name("glc-llm-keys")
 def fastapi_app():
     """Serve the unchanged glc_v1 FastAPI app."""
     import os
-    import sys
 
     # The gateway writes its databases and install token here on startup, so the
     # folder must exist on the mounted Volume before the app's lifespan runs.
     os.makedirs("/data/glc", exist_ok=True)
-
-    import glc
-    print("GLC FILE PATH:", glc.__file__, flush=True)
-    if os.path.exists("/root/glc/main.py"):
-        with open("/root/glc/main.py") as f:
-            print("GLC MAIN LENGTH:", len(f.read()), flush=True)
-    else:
-        print("GLC MAIN NOT IN /root/glc", flush=True)
 
     from glc.main import app as web  # the real glc_v1 app, imported as-is
     return web

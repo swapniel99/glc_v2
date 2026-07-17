@@ -108,30 +108,7 @@ async def index() -> str:
 
 @app.get("/healthz")
 async def healthz():
-    import os
-    from glc.routes import chat
-    try:
-        with open(chat.__file__) as f:
-            chat_code = f.read()
-    except Exception as e:
-        chat_code = f"Error reading: {e!r}"
-
-    return {
-        "ok": True,
-        "port": PORT,
-        "chat_file": chat.__file__,
-        "chat_code_snippet_end": chat_code[-300:] if isinstance(chat_code, str) else chat_code,
-    }
-
-
-@app.get("/debug")
-async def debug_info():
-    import inspect
-    from glc.routes import chat
-    return {
-        "file": chat.__file__,
-        "source": inspect.getsource(chat.status),
-    }
+    return {"ok": True, "port": PORT}
 
 
 if __name__ == "__main__":

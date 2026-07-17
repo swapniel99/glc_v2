@@ -38,8 +38,10 @@ image = (
         "pyyaml>=6.0",
         "websockets>=12.0",
         "twilio>=9.0",
+        "wheel",
     )
-    .env({"GLC_CONFIG_DIR": "/data/glc", "GLC_BUILD_ID": "7"})
+    .env({"GLC_CONFIG_DIR": "/data/glc", "GLC_BUILD_ID": "8"})
+    .add_local_dir(str(LOCAL_GLC), remote_path="/root/glc")
 )
 
 # A persistent Volume. The audit db, pairing db, and install token live here and

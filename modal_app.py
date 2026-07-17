@@ -40,7 +40,7 @@ image = (
         "twilio>=9.0",
         "wheel",
     )
-    .env({"GLC_CONFIG_DIR": "/data/glc", "GLC_BUILD_ID": "8"})
+    .env({"GLC_CONFIG_DIR": "/data/glc", "GLC_BUILD_ID": "9"})
     .add_local_dir(str(LOCAL_GLC), remote_path="/root/glc")
 )
 

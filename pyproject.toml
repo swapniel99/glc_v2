@@ -2,7 +2,7 @@
 name = "glc-v1"
 version = "0.1.0"
 description = "GLC v1 — Gateway for LLMs and Channels. Session 11 scaffold."
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",

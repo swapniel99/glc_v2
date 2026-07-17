@@ -98,24 +98,41 @@ def test_read_endpoints_enforce_auth(app_client):
         assert r.status_code == 403, f"{url} did not return 403 on bad token"
 
 
-def test_chat_request_rejects_bad_provider(app_client):
-    r = app_client.post("/v1/chat", json={"prompt": "hi", "provider": "no_such_provider"})
+def test_chat_requires_valid_bearer_token(app_client, install_token):
+    payload = {"prompt": "hi", "provider": "no_such_provider"}
+    assert app_client.post("/v1/chat", json=payload).status_code == 401
+    assert app_client.post("/v1/chat", json=payload, headers={"Authorization": "Bearer badtoken"}).status_code == 403
+
+    r = app_client.post("/v1/chat", json=payload, headers={"Authorization": f"Bearer {install_token}"})
     # If no providers wired at all, the validation hits 400; if they are
     # wired, the candidate list is empty (also 400).
     assert r.status_code in (400, 503)
 
 
-def test_chat_request_minimal_body_validates(app_client):
+def test_data_plane_endpoints_require_bearer_token(app_client):
+    requests = [
+        ("/v1/chat", {"prompt": "hi"}),
+        ("/v1/chat/batch", {"calls": []}),
+        ("/v1/vision", {"prompt": "hi", "image": "https://example.com/image.png"}),
+        ("/v1/embed", {"text": "hi"}),
+        ("/v1/transcribe", {"audio_b64": ""}),
+        ("/v1/speak", {"text": "hi"}),
+    ]
+    for url, payload in requests:
+        assert app_client.post(url, json=payload).status_code == 401, f"{url} did not require a bearer token"
+
+
+def test_chat_request_minimal_body_validates(app_client, install_token):
     """The request body schema accepts a bare prompt with no provider."""
     # We don't care about the upstream call result — just that Pydantic
     # accepts the body shape (i.e., not a 422).
-    r = app_client.post("/v1/chat", json={"prompt": "hi"})
+    r = app_client.post("/v1/chat", json={"prompt": "hi"}, headers={"Authorization": f"Bearer {install_token}"})
     assert r.status_code != 422
 
 
-def test_embed_request_413_on_oversize(app_client):
+def test_embed_request_413_on_oversize(app_client, install_token):
     huge = "x" * 9000
-    r = app_client.post("/v1/embed", json={"text": huge})
+    r = app_client.post("/v1/embed", json={"text": huge}, headers={"Authorization": f"Bearer {install_token}"})
     # 413 if embedders exist; 503 if none configured at all.
     assert r.status_code in (413, 503)
 

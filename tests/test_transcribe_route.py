@@ -26,6 +26,11 @@ def _fake_provider(name: str, *, text: str = "hello", raise_: STTError | None = 
     return Fake()
 
 
+@pytest.fixture
+def auth_headers(install_token):
+    return {"Authorization": f"Bearer {install_token}"}
+
+
 @pytest.fixture(autouse=True)
 def _clean_providers():
     yield
@@ -33,40 +38,40 @@ def _clean_providers():
         register_test_provider(n, None)
 
 
-def test_transcribe_streaming_returns_400(app_client):
+def test_transcribe_streaming_returns_400(app_client, auth_headers):
     body = {"audio_b64": base64.b64encode(b"\x00\x00").decode(), "mime": "audio/wav", "prefer": "streaming"}
-    r = app_client.post("/v1/transcribe", json=body)
+    r = app_client.post("/v1/transcribe", json=body, headers=auth_headers)
     assert r.status_code == 400
 
 
-def test_transcribe_bad_base64_returns_400(app_client):
-    r = app_client.post("/v1/transcribe", json={"audio_b64": "!!!not-base64!!!", "mime": "audio/wav"})
+def test_transcribe_bad_base64_returns_400(app_client, auth_headers):
+    r = app_client.post("/v1/transcribe", json={"audio_b64": "!!!not-base64!!!", "mime": "audio/wav"}, headers=auth_headers)
     assert r.status_code in (400, 502)
 
 
-def test_transcribe_default_calls_registered_provider(app_client):
+def test_transcribe_default_calls_registered_provider(app_client, auth_headers):
     register_test_provider("groq_whisper", _fake_provider("groq_whisper"))
     body = {"audio_b64": base64.b64encode(b"\x00" * 100).decode(), "mime": "audio/wav", "prefer": "default"}
-    r = app_client.post("/v1/transcribe", json=body)
+    r = app_client.post("/v1/transcribe", json=body, headers=auth_headers)
     assert r.status_code == 200
     j = r.json()
     assert j["text"] == "hello"
     assert j["provider"] == "groq_whisper"
 
 
-def test_transcribe_provider_error_becomes_502(app_client):
+def test_transcribe_provider_error_becomes_502(app_client, auth_headers):
     register_test_provider(
         "groq_whisper",
         _fake_provider("groq_whisper", raise_=STTError("groq HTTP 500: upstream is down")),
     )
     body = {"audio_b64": base64.b64encode(b"\x00").decode(), "mime": "audio/wav", "prefer": "default"}
-    r = app_client.post("/v1/transcribe", json=body)
+    r = app_client.post("/v1/transcribe", json=body, headers=auth_headers)
     assert r.status_code == 502
 
 
-def test_transcribe_stub_returns_501(app_client):
+def test_transcribe_stub_returns_501(app_client, auth_headers):
     """No provider registered — the catalogue stub raises
     NotImplementedError, dispatcher converts to status=501."""
     body = {"audio_b64": base64.b64encode(b"\x00").decode(), "mime": "audio/wav", "prefer": "default"}
-    r = app_client.post("/v1/transcribe", json=body)
+    r = app_client.post("/v1/transcribe", json=body, headers=auth_headers)
     assert r.status_code == 501

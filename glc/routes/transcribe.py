@@ -5,12 +5,13 @@ from __future__ import annotations
 import base64
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from glc.voice.stt import STTError, transcribe
+from glc.security.auth import require_install_token
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_install_token)])
 
 
 class TranscribeRequest(BaseModel):

@@ -14,19 +14,10 @@ import time
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel
 
-from glc.config import get_or_create_install_token
+from glc.security.auth import require_install_token
 from glc.security.pairing import CODE_TTL_SECONDS, get_pairing_store
 
 router = APIRouter()
-
-
-def _require_token(authorization: str | None) -> None:
-    expected = get_or_create_install_token()
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(401, "missing bearer token (Authorization: Bearer <install_token>)")
-    presented = authorization.removeprefix("Bearer ").strip()
-    if presented != expected:
-        raise HTTPException(403, "install token mismatch")
 
 
 class PairRequest(BaseModel):
@@ -48,7 +39,7 @@ class PairConfirmRequest(BaseModel):
 
 @router.post("/v1/control/pair", response_model=PairResponse)
 async def pair(req: PairRequest, authorization: str | None = Header(default=None)):
-    _require_token(authorization)
+    require_install_token(authorization)
     if req.trust_level not in ("user_paired", "owner_paired"):
         raise HTTPException(400, f"trust_level must be user_paired or owner_paired, got {req.trust_level!r}")
     code, expires_at = get_pairing_store().issue_code(
@@ -62,7 +53,7 @@ async def pair(req: PairRequest, authorization: str | None = Header(default=None
 
 @router.post("/v1/control/pair/confirm")
 async def pair_confirm(req: PairConfirmRequest, authorization: str | None = Header(default=None)):
-    _require_token(authorization)
+    require_install_token(authorization)
     rec = get_pairing_store().confirm_code(req.code)
     if rec is None:
         raise HTTPException(404, "code unknown or expired")
@@ -77,7 +68,7 @@ async def pair_confirm(req: PairConfirmRequest, authorization: str | None = Head
 
 @router.get("/v1/control/presence")
 async def presence(request: Request, authorization: str | None = Header(default=None)):
-    _require_token(authorization)
+    require_install_token(authorization)
     state = request.app.state
     started = getattr(state, "started_at", time.time())
     pairings = get_pairing_store().all_pairings()
@@ -98,7 +89,7 @@ async def presence(request: Request, authorization: str | None = Header(default=
 
 @router.post("/v1/control/kill")
 async def kill(request: Request, authorization: str | None = Header(default=None)):
-    _require_token(authorization)
+    require_install_token(authorization)
     client_host = request.client.host if request.client else "unknown"
     if os.getenv("GLC_KILL_ALLOW_REMOTE") != "1" and client_host not in ("127.0.0.1", "::1", "localhost"):
         raise HTTPException(

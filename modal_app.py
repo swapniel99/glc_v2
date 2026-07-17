@@ -39,8 +39,7 @@ image = (
         "websockets>=12.0",
         "twilio>=9.0",
     )
-    .env({"GLC_CONFIG_DIR": "/data/glc", "GLC_BUILD_ID": "4"})
-    .add_local_dir(str(LOCAL_GLC), remote_path="/root/glc")
+    .env({"GLC_CONFIG_DIR": "/data/glc", "GLC_BUILD_ID": "6"})
 )
 
 # A persistent Volume. The audit db, pairing db, and install token live here and

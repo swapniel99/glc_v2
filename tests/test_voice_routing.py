@@ -155,7 +155,9 @@ async def test_synthesize_unknown_prefer_errors():
 
 
 @pytest.mark.asyncio
-async def test_synthesize_default_when_stub_returns_501():
+async def test_synthesize_default_when_stub_returns_501(monkeypatch):
+    import sys
+    monkeypatch.setitem(sys.modules, "numpy", None)
     with pytest.raises(TTSError) as ei:
         await synthesize("hi", prefer="default")
     assert ei.value.status == 501

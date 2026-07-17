@@ -11,11 +11,14 @@ regress them — tests in test_v9_compat.py assert behaviour shape.
 from __future__ import annotations
 
 import asyncio as _asyncio
+import ipaddress
 import json
 import os
+import socket
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin, urlsplit
 
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -23,7 +26,6 @@ from fastapi.responses import StreamingResponse
 from jsonschema import Draft202012Validator, ValidationError
 
 from glc import db
-from glc.security.auth import require_install_token
 from glc import providers as P
 from glc.llm_schemas import (
     BatchChatRequest,
@@ -37,6 +39,7 @@ from glc.llm_schemas import (
     VisionRequest,
 )
 from glc.routing import DEFAULT_ROUTER_ORDER, LIMITS, SHORTCUTS
+from glc.security.auth import require_install_token
 
 DEFAULT_ORDER = ["ollama", "gemini", "nvidia", "groq", "cerebras", "openrouter", "github"]
 ORDER = [x.strip() for x in os.getenv("LLM_ORDER", ",".join(DEFAULT_ORDER)).split(",") if x.strip()]
@@ -286,6 +289,52 @@ def _required_caps(req: ChatRequest):
     return caps
 
 
+def _is_public_ip(address: str) -> bool:
+    """Return whether address is globally routable, for image fetch destinations."""
+    try:
+        return ipaddress.ip_address(address).is_global
+    except ValueError:
+        return False
+
+
+async def _validate_image_url(url: str) -> str:
+    """Allow only public http(s) endpoints and return a safe address to connect."""
+    parsed = urlsplit(url)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        raise HTTPException(400, "image URL must use http or https and include a host")
+    if parsed.username or parsed.password:
+        raise HTTPException(400, "image URL must not include credentials")
+    try:
+        _ = parsed.port
+    except ValueError:
+        raise HTTPException(400, "image URL has an invalid port")
+
+    host = parsed.hostname
+    try:
+        addresses = [str(ipaddress.ip_address(host))]
+    except ValueError:
+        try:
+            results = await _asyncio.get_running_loop().getaddrinfo(
+                host, None, type=socket.SOCK_STREAM
+            )
+        except OSError as e:
+            raise HTTPException(400, f"could not resolve image host: {e}")
+        addresses = list(dict.fromkeys(result[4][0] for result in results))
+
+    if not addresses or any(not _is_public_ip(address) for address in addresses):
+        raise HTTPException(400, "image URL must resolve only to public IP addresses")
+    return addresses[0]
+
+
+def _pin_image_url(url: str, address: str) -> str:
+    """Connect to checked address while retaining original host for HTTP/TLS."""
+    parsed = urlsplit(url)
+    netloc = f"[{address}]" if ":" in address else address
+    if parsed.port is not None:
+        netloc = f"{netloc}:{parsed.port}"
+    return parsed._replace(netloc=netloc).geturl()
+
+
 async def _resolve_image_urls(messages):
     import base64
 
@@ -296,9 +345,27 @@ async def _resolve_image_urls(messages):
             "User-Agent": "Mozilla/5.0 (compatible; GLCv1/0.1; +image-resolver)",
             "Accept": "image/*,*/*;q=0.8",
         }
-        async with _httpx.AsyncClient(timeout=30, follow_redirects=True, headers=headers) as c:
+        current_url = url
+        async with _httpx.AsyncClient(
+            timeout=30, follow_redirects=False, trust_env=False, headers=headers
+        ) as c:
             try:
-                r = await c.get(url)
+                for _ in range(6):
+                    address = await _validate_image_url(current_url)
+                    parsed = urlsplit(current_url)
+                    r = await c.get(
+                        _pin_image_url(current_url, address),
+                        headers={"Host": parsed.netloc},
+                        extensions={"sni_hostname": parsed.hostname},
+                    )
+                    if not r.is_redirect:
+                        break
+                    location = r.headers.get("location")
+                    if not location:
+                        raise HTTPException(400, "image URL redirect has no location")
+                    current_url = urljoin(current_url, location)
+                else:
+                    raise HTTPException(400, "image URL exceeded redirect limit")
                 r.raise_for_status()
             except _httpx.HTTPError as e:
                 raise HTTPException(400, f"failed to fetch image url {url!r}: {e}")

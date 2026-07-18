@@ -113,3 +113,18 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
   - [`glc/routes/channels.py`](glc/routes/channels.py) uses the injected sandbox session factory in Modal, validates returned `ChannelMessage` objects, rejects route/channel mismatches, and returns generic startup/operation failures.
   - [`tests/test_adapter_sandbox.py`](tests/test_adapter_sandbox.py) verifies allowlisted and network-blocked sandbox creation, absence of inherited gateway secrets/volumes, byte-safe webhook transport, injected factory use, mismatch rejection, cleanup, and error redaction.
 - Deployment verification: A live WhatsApp adapter Sandbox reported no gateway provider secrets and no gateway data Volume. Modal denied outbound access to unapproved `example.com`; the adapter observed `ConnectError`, and the Sandbox protocol completed successfully with a null message result.
+
+## F-007: Shared Adapter And Tool Credentials
+
+- Finding: Migration originally mounted one provider-key Secret on the same Function that executed adapter code. A compromised adapter could read every provider key, and future action dispatch had no credential bound to one user, tenant, tool, or final argument set.
+- Reference invariant(s): 1, 2, 4, 6.
+- Attacker role: Compromised adapter.
+- Status: Verified deployed.
+- Evidence / fix:
+  - [`modal_app.py`](modal_app.py) keeps provider and capability-signing Secrets on the gateway Function only. Adapter Sandboxes receive neither gateway Secret nor gateway Volume. Adapter Secret mappings must exactly match `glc-adapter-<adapter-name>`, preventing provider, signing, or cross-adapter Secret mapping.
+  - [`glc/channels/execution.py`](glc/channels/execution.py) rejects the in-process adapter fallback outside development, so a missing production Sandbox factory fails closed.
+  - [`glc/security/scoped_credentials.py`](glc/security/scoped_credentials.py) evaluates policy against gateway-verified identity and final arguments. Issued credentials bind adapter, user, tenant, trust level, tool, tool-call ID, canonical argument hash, audience, expiry, and random nonce. `deny` and `require_approval` issue nothing.
+  - Modal redemption uses `Dict.put(skip_if_exists=True)` as an atomic distributed consume operation, preventing replay across autoscaled gateway replicas. Expired nonce records are purged daily.
+  - Current chat `tool_calls` remain proposals and are not executed. No adapter-facing credential-mint endpoint exists; future action handlers must use the injected gateway authorizer.
+  - [`tests/test_scoped_credentials.py`](tests/test_scoped_credentials.py) covers signature tampering, changed tool/call/arguments, wrong adapter/user/tenant/trust/audience, expiry, replay, concurrent redemption, policy denial, atomic Modal consumption, strict Secret mapping, and production fallback rejection.
+- Deployment verification: deployed gateway returned `200 OK` from `/healthz` with no signing-key configuration error in Modal logs. Inside the live gateway container, the scoped-credential probe rejected changed final arguments, accepted the correctly scoped first redemption, and rejected replay of the consumed credential. Earlier live adapter evidence also confirmed no gateway provider Secrets or gateway Volume were visible from the WhatsApp Sandbox.

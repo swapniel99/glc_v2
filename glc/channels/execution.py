@@ -7,6 +7,7 @@ requests never import or execute adapter code in the gateway process.
 
 from __future__ import annotations
 
+import os
 from typing import Any, Protocol
 
 from glc.channels import registry
@@ -45,4 +46,6 @@ async def open_adapter_session(state: Any, name: str) -> AdapterSession:
     factory: AdapterSessionFactory | None = getattr(state, "adapter_session_factory", None)
     if factory is not None:
         return await factory.open(name)
+    if os.getenv("GLC_ENV") != "development":
+        raise RuntimeError("sandbox adapter factory required outside development")
     return LocalAdapterSession(name)

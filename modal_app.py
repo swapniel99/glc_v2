@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +53,10 @@ data_volume = modal.Volume.from_name("glc-data", create_if_missing=True)
 # The provider keys, injected as environment variables at runtime. Created
 # separately with `modal secret create glc-llm-keys ...` (mock values for now).
 llm_secret = modal.Secret.from_name("glc-llm-keys")
+
+# Credential signing material is gateway-only and separate from provider keys.
+capability_secret = modal.Secret.from_name("glc-capability-signing-key")
+capability_nonces = modal.Dict.from_name("glc-capability-nonces", create_if_missing=True)
 
 logger = logging.getLogger(__name__)
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -106,12 +111,32 @@ def _load_adapter_secrets() -> dict[str, modal.Secret]:
     for name, secret_name in _load_json_mapping("GLC_MODAL_ADAPTER_SECRETS_JSON").items():
         if name not in _DEFAULT_ADAPTER_EGRESS or not isinstance(secret_name, str) or not secret_name:
             raise ValueError("invalid adapter secret configuration")
+        expected_name = f"glc-adapter-{name.replace('_', '-')}"
+        if secret_name != expected_name:
+            raise ValueError(f"adapter {name} must use secret {expected_name}")
         secrets[name] = modal.Secret.from_name(secret_name)
     return secrets
 
 
 ADAPTER_EGRESS = _load_adapter_egress()
 ADAPTER_SECRETS = _load_adapter_secrets()
+
+
+class ModalNonceStore:
+    """Distributed atomic replay store shared by all gateway replicas."""
+
+    async def consume(self, nonce: str, expires_at: int) -> bool:
+        return await capability_nonces.put.aio(nonce, expires_at, skip_if_exists=True)
+
+
+@app.function(image=gateway_image, schedule=modal.Period(days=1))
+async def purge_expired_capability_nonces() -> None:
+    """Bound replay-ledger growth without making live nonces reusable."""
+
+    now = int(time.time())
+    async for nonce, expires_at in capability_nonces.items.aio():
+        if isinstance(expires_at, int) and expires_at <= now:
+            await capability_nonces.pop.aio(nonce, None)
 
 
 class ModalAdapterSession:
@@ -193,7 +218,7 @@ class ModalAdapterSessionFactory:
 @app.function(
     image=gateway_image,
     volumes={"/data": data_volume},
-    secrets=[llm_secret],
+    secrets=[llm_secret, capability_secret],
     min_containers=0,  # scale to zero when idle -> protects the free tier
 )
 @modal.asgi_app()
@@ -203,6 +228,14 @@ def fastapi_app():
     os.makedirs("/data/glc", exist_ok=True)
 
     from glc.main import app as web  # the real glc_v1 app, imported as-is
+    from glc.security.scoped_credentials import (
+        ScopedActionAuthorizer,
+        ScopedCredentialAuthority,
+        signing_key_from_environment,
+    )
 
     web.state.adapter_session_factory = ModalAdapterSessionFactory()
+    web.state.scoped_action_authorizer = ScopedActionAuthorizer(
+        ScopedCredentialAuthority(signing_key_from_environment(), ModalNonceStore())
+    )
     return web

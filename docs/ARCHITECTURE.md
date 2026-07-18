@@ -82,12 +82,27 @@ Lives in: `glc/audit/`.
 Answers: the recovery scenario after a bad outcome — the operator
 can replay exactly what the agent saw and did.
 
-## What S12 works on
+## 7. Modal trust and credential boundaries
 
-The S11 policy engine is the application-level enforcement layer.
-S12 moves this gateway onto Modal containers and then hardens it. The
-environmental layer it needs, container isolation per component,
-short-lived scoped credentials in place of one shared secret, and
-network egress filters, is not built yet. Building it is the
-assignment. The two layers should run independently, so that a
-failure in one does not invalidate the other.
+Production webhook adapters run in request-scoped Modal Sandboxes, not in the
+gateway process. They receive no gateway Volume or provider-key Secret, and
+production refuses the local in-process fallback. Each optional adapter Secret
+must use its adapter-specific name and each Sandbox has an explicit egress
+allowlist or no network.
+
+Provider credentials and the capability-signing key remain gateway-only.
+`glc/security/scoped_credentials.py` evaluates policy against gateway-verified
+user, tenant, adapter, trust level, and final arguments before issuing a
+short-lived action credential. Signed scope includes trust level, tool-call ID,
+and argument hash. Redemption checks every claim and atomically consumes its
+nonce through a Modal Dict, preventing replay across gateway replicas.
+
+Current model tool calls are proposals, not executed actions. No endpoint lets
+an adapter mint credentials or submit self-claimed identity. Future action
+handlers must redeem through `app.state.scoped_action_authorizer` immediately
+before dispatch.
+
+Lives in: `modal_app.py`, `glc/channels/execution.py`,
+`glc/security/scoped_credentials.py`.
+Answers: shared provider-secret theft, cross-user/tenant confused deputy,
+changed-argument TOCTOU, cross-tool use, and credential replay.

@@ -36,8 +36,27 @@ export GLC_MODAL_ADAPTER_SECRETS_JSON='{"telegram":"glc-adapter-telegram"}'
 uv run modal deploy modal_app.py
 ```
 
-Never map `glc-llm-keys` as an adapter secret. A missing adapter secret remains
-fail-closed rather than inheriting the gateway secret.
+Adapter Secret names are enforced as `glc-adapter-<adapter-name>` (underscores
+become hyphens). Put only that adapter's platform credentials in it. Gateway
+Secrets such as `glc-llm-keys` and another adapter's Secret are rejected. A
+missing adapter Secret remains fail-closed rather than inheriting one.
+
+Create a separate gateway-only signing Secret before deployment. Generate at
+least 32 random bytes locally, then paste the value into this command:
+
+```sh
+uv run modal secret create glc-capability-signing-key \
+  GLC_CAPABILITY_SIGNING_KEY='<random-value>'
+```
+
+[`glc/security/scoped_credentials.py`](glc/security/scoped_credentials.py)
+authorizes final tool arguments through policy, then signs a credential bound
+to adapter, actual user, tenant, trust level, tool, tool-call ID, argument hash,
+audience, expiry, and nonce. Modal uses an atomic distributed nonce ledger, so a
+credential can be redeemed once across autoscaled gateway containers. Model
+`tool_calls` are proposals only in the current scaffold; they are returned to
+the authenticated caller and are not executed. Any future tool runner must use
+`app.state.scoped_action_authorizer` before dispatch.
 
 ## Where to look
 

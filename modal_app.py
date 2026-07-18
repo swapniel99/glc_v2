@@ -23,15 +23,32 @@ app = modal.App("glc-v1-gateway")
 PROJECT_ROOT = Path(__file__).resolve().parent
 LOCAL_GLC = PROJECT_ROOT / "glc"
 PYPROJECT = PROJECT_ROOT / "pyproject.toml"
+UV_LOCK = PROJECT_ROOT / "uv.lock"
 
-# The image = a Linux box with Python 3.12, the same dependencies as
-# pyproject.toml, the glc package copied in, and GLC_CONFIG_DIR pointed at the
-# Volume mount so all databases land on persistent storage instead of the
-# throwaway container filesystem. The manifest is also mounted because this
-# container resolves the adapter Sandbox image dynamically at request time.
+if not UV_LOCK.is_file():
+    raise RuntimeError("uv.lock is required for reproducible Modal image builds")
+
+# Pin the amd64 Debian manifest so upstream tag changes cannot alter deployed
+# images. Keep uv pinned too; uv_sync otherwise copies uv:latest.
+BASE_IMAGE = (
+    "debian:bookworm-slim@sha256:"
+    "63a496b5d3b99214b39f5ed70eb71a61e590a77979c79cbee4faf991f8c0783e"
+)
+UV_VERSION = "0.11.29"
+base_image = modal.Image.from_registry(BASE_IMAGE, add_python="3.12")
+
+# The image = a Linux box with Python 3.12, dependency versions from uv.lock,
+# the glc package copied in, and GLC_CONFIG_DIR pointed at the Volume mount so
+# all databases land on persistent storage instead of the throwaway container
+# filesystem. The manifest is also mounted because this container resolves the
+# adapter Sandbox image dynamically at request time.
 gateway_image = (
-    modal.Image.debian_slim(python_version="3.12")
-    .pip_install_from_pyproject(str(PYPROJECT))
+    base_image.uv_sync(
+        uv_project_dir=str(PROJECT_ROOT),
+        frozen=True,
+        uv_version=UV_VERSION,
+        extra_options="--no-dev",
+    )
     .env({"GLC_CONFIG_DIR": "/data/glc"})
     .add_local_dir(str(LOCAL_GLC), remote_path="/root/glc")
     .add_local_file(str(PYPROJECT), remote_path="/root/pyproject.toml")
@@ -40,8 +57,12 @@ gateway_image = (
 # Sandboxes receive code and dependencies, but no gateway Volume or provider
 # Secret. Their filesystem and process namespace are separate from the gateway.
 adapter_image = (
-    modal.Image.debian_slim(python_version="3.12")
-    .pip_install_from_pyproject(str(PYPROJECT))
+    base_image.uv_sync(
+        uv_project_dir=str(PROJECT_ROOT),
+        frozen=True,
+        uv_version=UV_VERSION,
+        extra_options="--no-dev",
+    )
     .env({"GLC_CONFIG_DIR": "/tmp/glc", "GLC_ENV": "production"})
     .add_local_dir(str(LOCAL_GLC), remote_path="/root/glc")
 )

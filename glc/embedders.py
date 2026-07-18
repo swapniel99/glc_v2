@@ -21,12 +21,15 @@ invalidates every index — see README.
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from collections import deque
 from typing import Literal
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 TaskType = Literal["retrieval_document", "retrieval_query"]
 EMBED_DIM = 768  # both providers are pinned to this
@@ -258,7 +261,8 @@ async def embed_with_failover(
             return e.name, out, attempts, latency
         except Exception as exc:
             last_err = exc
-            reason = str(exc)[:200]
+            logger.error("Embedder failed provider=%s model=%s upstream_error=%s", e.name, e.model, exc)
+            reason = "upstream error"
             e.state.mark_failure(reason)
             attempts.append({"provider": e.name, "reason": reason})
             if explicit:

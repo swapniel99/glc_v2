@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio as _asyncio
 import ipaddress
 import json
+import logging
 import os
 import socket
 import time
@@ -40,6 +41,12 @@ from glc.llm_schemas import (
 )
 from glc.routing import DEFAULT_ROUTER_ORDER, LIMITS, SHORTCUTS
 from glc.security.auth import require_install_token
+
+logger = logging.getLogger(__name__)
+
+_CLIENT_UPSTREAM_ERROR = "Chat service temporarily unavailable"
+_CLIENT_EMBED_ERROR = "Embedding service temporarily unavailable"
+_CLIENT_IMAGE_FETCH_ERROR = "Image retrieval failed"
 
 DEFAULT_ORDER = ["ollama", "gemini", "nvidia", "groq", "cerebras", "openrouter", "github"]
 ORDER = [x.strip() for x in os.getenv("LLM_ORDER", ",".join(DEFAULT_ORDER)).split(",") if x.strip()]
@@ -314,9 +321,7 @@ async def _validate_image_url(url: str) -> str:
         addresses = [str(ipaddress.ip_address(host))]
     except ValueError:
         try:
-            results = await _asyncio.get_running_loop().getaddrinfo(
-                host, None, type=socket.SOCK_STREAM
-            )
+            results = await _asyncio.get_running_loop().getaddrinfo(host, None, type=socket.SOCK_STREAM)
         except OSError as e:
             raise HTTPException(400, f"could not resolve image host: {e}")
         addresses = list(dict.fromkeys(result[4][0] for result in results))
@@ -368,7 +373,8 @@ async def _resolve_image_urls(messages):
                     raise HTTPException(400, "image URL exceeded redirect limit")
                 r.raise_for_status()
             except _httpx.HTTPError as e:
-                raise HTTPException(400, f"failed to fetch image url {url!r}: {e}")
+                logger.error("Image fetch failed url=%s upstream_error=%s", url, e)
+                raise HTTPException(502, _CLIENT_IMAGE_FETCH_ERROR) from None
             mt = (r.headers.get("content-type") or "image/png").split(";")[0].strip()
             b64 = base64.b64encode(r.content).decode()
             return f"data:{mt};base64,{b64}"
@@ -526,6 +532,12 @@ async def chat(req: ChatRequest, request: Request):
                         )
                         yield f"data: {json.dumps({'done': True, 'provider': name})}\n\n"
                     except Exception as e:
+                        logger.error(
+                            "Chat stream failed provider=%s model=%s upstream_error=%s",
+                            name,
+                            req.model or provider.model,
+                            e,
+                        )
                         db.log_call(
                             provider=name,
                             model=req.model or provider.model,
@@ -539,7 +551,7 @@ async def chat(req: ChatRequest, request: Request):
                             session=req.session,
                             retries=retries,
                         )
-                        yield f"data: {json.dumps({'error': str(e)[:300]})}\n\n"
+                        yield f"data: {json.dumps({'error': _CLIENT_UPSTREAM_ERROR})}\n\n"
 
                 return StreamingResponse(gen(), media_type="text/event-stream")
 
@@ -602,7 +614,13 @@ async def chat(req: ChatRequest, request: Request):
                     try:
                         parsed = _validate_structured(result["text"], req.response_format.schema_)
                     except (ValueError, ValidationError) as ve2:
-                        raise HTTPException(503, f"structured output failed validation: {ve2}")
+                        logger.error(
+                            "Chat structured-output validation failed provider=%s model=%s upstream_error=%s",
+                            name,
+                            req.model or provider.model,
+                            ve2,
+                        )
+                        raise HTTPException(503, _CLIENT_UPSTREAM_ERROR) from None
 
             tokens = (result["input_tokens"] or 0) + (result["output_tokens"] or 0)
             rtr.state[name].tokens_today += tokens
@@ -652,6 +670,12 @@ async def chat(req: ChatRequest, request: Request):
             ).model_dump()
         except P.ProviderError as e:
             last_err = str(e)
+            logger.error(
+                "Chat provider failed provider=%s model=%s upstream_error=%s",
+                name,
+                req.model or provider.model,
+                e,
+            )
             secs, reason = _backoff_for(e, has_model_override=bool(req.model))
             if secs > 0:
                 rtr.state[name].mark_unavailable(secs, reason)
@@ -668,18 +692,24 @@ async def chat(req: ChatRequest, request: Request):
                 session=req.session,
                 retries=retries,
             )
-            tag = f"failed: {str(e)[:100]}"
+            tag = "failed: upstream error"
             if secs > 0:
                 tag += f" → backoff {secs:.0f}s ({reason})"
             all_attempts.append({"provider": name, "reason": tag})
             if explicit_override or not getattr(e, "retryable", True):
-                raise HTTPException(502, f"{name} failed: {e}")
+                raise HTTPException(502, _CLIENT_UPSTREAM_ERROR) from None
             candidates = [c for c in candidates if c != name]
             continue
         except HTTPException:
             raise
         except Exception as e:
             last_err = str(e)
+            logger.exception(
+                "Chat provider failed provider=%s model=%s upstream_error=%s",
+                name,
+                req.model or provider.model,
+                e,
+            )
             secs, reason = _backoff_for(e, has_model_override=bool(req.model))
             if secs > 0:
                 rtr.state[name].mark_unavailable(secs, reason)
@@ -696,13 +726,14 @@ async def chat(req: ChatRequest, request: Request):
                 session=req.session,
                 retries=retries,
             )
-            all_attempts.append({"provider": name, "reason": f"exception: {str(e)[:120]}"})
+            all_attempts.append({"provider": name, "reason": "exception: upstream error"})
             if explicit_override:
-                raise HTTPException(502, f"{name} failed: {e}")
+                raise HTTPException(502, _CLIENT_UPSTREAM_ERROR) from None
             candidates = [c for c in candidates if c != name]
             continue
 
-    raise HTTPException(503, f"all providers unavailable. attempts: {all_attempts}. last_error: {last_err}")
+    logger.error("All chat providers unavailable attempts=%s last_upstream_error=%s", all_attempts, last_err)
+    raise HTTPException(503, _CLIENT_UPSTREAM_ERROR)
 
 
 @router.post("/v1/chat/batch")
@@ -716,7 +747,8 @@ async def chat_batch(req: BatchChatRequest, request: Request):
             except HTTPException as he:
                 return {"error": str(he.detail), "status_code": he.status_code}
             except Exception as e:
-                return {"error": str(e)[:400], "status_code": 500}
+                logger.exception("Chat batch call failed upstream_error=%s", e)
+                return {"error": _CLIENT_UPSTREAM_ERROR, "status_code": 500}
 
     results = await _asyncio.gather(*[_one(c) for c in req.calls])
     return {"results": results}
@@ -768,6 +800,7 @@ async def embed(req: EmbedRequest, request: Request):
         )
     except E.EmbedderError as e:
         latency = int((time.time() - t0) * 1000)
+        logger.error("Embedding request failed provider=%s upstream_error=%s", req.provider or "(any)", e)
         db.log_call(
             provider=req.provider or "(any)",
             model="(none)",
@@ -778,13 +811,11 @@ async def embed(req: EmbedRequest, request: Request):
             override=req.provider,
             call_role="embed",
         )
-        if req.provider:
-            if e.status == 429:
-                raise HTTPException(429, f"{req.provider} rate-limited: {e}")
-            if e.status == 400:
-                raise HTTPException(400, str(e))
-            raise HTTPException(502, f"{req.provider} embed failed: {e}")
-        raise HTTPException(503, str(e))
+        if e.status == 400 and str(e).startswith("unknown embedder"):
+            raise HTTPException(400, str(e)) from None
+        if e.status == 429:
+            raise HTTPException(429, _CLIENT_EMBED_ERROR) from None
+        raise HTTPException(502 if req.provider else 503, _CLIENT_EMBED_ERROR) from None
 
     db.log_call(
         provider=name,
@@ -803,7 +834,7 @@ async def embed(req: EmbedRequest, request: Request):
         embedding=result["embedding"],
         dim=result["dim"],
         latency_ms=latency,
-        attempted=attempts,
+        attempted=[{"provider": attempt["provider"], "reason": "unavailable"} for attempt in attempts],
     ).model_dump()
 
 
@@ -812,13 +843,19 @@ async def list_embedders(request: Request):
     from glc import embedders as E
 
     state = request.app.state
+    live = {}
+    for embedder in state.embedders:
+        snapshot = embedder.state.snapshot()
+        if snapshot["backoff_reason"]:
+            snapshot["backoff_reason"] = "unavailable"
+        live[embedder.name] = snapshot
     return {
         "order": state.embed_order,
         "models": {e.name: e.model for e in state.embedders},
         "fixed_dim": E.EMBED_DIM,
         "max_input_chars": E.MAX_INPUT_CHARS,
         "backoff_steps_s": E.BACKOFF_STEPS,
-        "live": {e.name: e.state.snapshot() for e in state.embedders},
+        "live": live,
         "today": db.aggregate(call_role="embed"),
     }
 
@@ -905,4 +942,10 @@ async def calls(
     provider: str | None = None,
     status: str | None = None,
 ):
-    return db.recent(limit=limit, provider=provider, status=status)
+    records = db.recent(limit=limit, provider=provider, status=status)
+    for record in records:
+        if record["error"]:
+            record["error"] = "Service failure"
+        if record["attempted"]:
+            record["attempted"] = "Redacted"
+    return records

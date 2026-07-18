@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import base64
+import logging
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from glc.voice.stt import STTError, transcribe
 from glc.security.auth import require_install_token
+from glc.voice.stt import STTError, transcribe
+
+logger = logging.getLogger(__name__)
+
+_CLIENT_STT_ERROR = "Transcription service temporarily unavailable"
 
 router = APIRouter(dependencies=[Depends(require_install_token)])
 
@@ -38,9 +43,10 @@ async def transcribe_route(req: TranscribeRequest):
     try:
         r = await transcribe(audio, req.mime, prefer=req.prefer)
     except STTError as e:
-        if req.prefer == "streaming":
-            raise HTTPException(400, str(e)) from e
-        raise HTTPException(e.status or 502, str(e)) from e
+        logger.error("Transcription failed upstream_error=%s", e)
+        raise HTTPException(
+            400 if req.prefer == "streaming" else e.status or 502, _CLIENT_STT_ERROR
+        ) from None
     return TranscribeResponse(
         text=r.text,
         language=r.language,

@@ -67,6 +67,20 @@ adapter_image = (
     .add_local_dir(str(LOCAL_GLC), remote_path="/root/glc")
 )
 
+# Policy evaluation and capability signing run outside the gateway process.
+# This image has no gateway Volume, provider keys, or writable policy mount;
+# policy.yaml therefore comes only from the bundled application package.
+policy_image = (
+    base_image.uv_sync(
+        uv_project_dir=str(PROJECT_ROOT),
+        frozen=True,
+        uv_version=UV_VERSION,
+        extra_options="--no-dev",
+    )
+    .env({"GLC_CONFIG_DIR": "/tmp/glc-policy", "GLC_ENV": "production"})
+    .add_local_dir(str(LOCAL_GLC), remote_path="/root/glc")
+)
+
 # Persistent gateway state. Audit data has a separate Volume owned only by the
 # single audit writer below.
 data_volume = modal.Volume.from_name("glc-data", create_if_missing=True)
@@ -77,7 +91,7 @@ _AUDIT_DB_PATH = "/audit/audit.sqlite"
 # separately with `modal secret create glc-llm-keys ...` (mock values for now).
 llm_secret = modal.Secret.from_name("glc-llm-keys")
 
-# Credential signing material is gateway-only and separate from provider keys.
+# Credential signing material is policy-service-only and separate from provider keys.
 capability_secret = modal.Secret.from_name("glc-capability-signing-key")
 capability_nonces = modal.Dict.from_name("glc-capability-nonces", create_if_missing=True)
 
@@ -150,6 +164,144 @@ class ModalNonceStore:
 
     async def consume(self, nonce: str, expires_at: int) -> bool:
         return await capability_nonces.put.aio(nonce, expires_at, skip_if_exists=True)
+
+
+def _action_identity(payload: dict[str, Any]):
+    from glc.security.scoped_credentials import ActionIdentity
+
+    raw = payload.get("identity")
+    fields = {"adapter", "user_id", "tenant_id", "trust_level", "audience"}
+    if not isinstance(raw, dict) or set(raw) != fields:
+        raise ValueError("invalid action identity")
+    if any(not isinstance(raw[field], str) or not raw[field] for field in fields):
+        raise ValueError("invalid action identity")
+    return ActionIdentity(**raw)
+
+
+def _run_policy_credential_operation(operation: str, payload: dict[str, Any]) -> Any:
+    """Evaluate, issue, or redeem credentials inside the policy boundary."""
+
+    from glc.security.scoped_credentials import (
+        ScopedActionAuthorizer,
+        ScopedCredentialAuthority,
+        signing_key_from_environment,
+    )
+
+    if not isinstance(payload, dict):
+        raise ValueError("invalid policy request")
+    common_fields = {"tool", "tool_call_id", "arguments", "identity"}
+    operation_field = "ttl_seconds" if operation == "authorize" else "credential"
+    if operation not in {"authorize", "verify"} or set(payload) != common_fields | {operation_field}:
+        raise ValueError("invalid policy request")
+    if not isinstance(payload["tool"], str) or not isinstance(payload["tool_call_id"], str):
+        raise ValueError("invalid policy request")
+    if not isinstance(payload["arguments"], dict):
+        raise ValueError("invalid policy request")
+
+    authorizer = ScopedActionAuthorizer(
+        ScopedCredentialAuthority(signing_key_from_environment(), ModalNonceStore())
+    )
+    common = {
+        "tool": payload["tool"],
+        "tool_call_id": payload["tool_call_id"],
+        "arguments": payload["arguments"],
+        "identity": _action_identity(payload),
+    }
+    if operation == "authorize":
+        if type(payload["ttl_seconds"]) is not int:
+            raise ValueError("invalid policy request")
+        return authorizer.authorize(**common, ttl_seconds=payload["ttl_seconds"])
+
+    if not isinstance(payload["credential"], str):
+        raise ValueError("invalid policy request")
+    claims = asyncio.run(authorizer.verify_and_consume(payload["credential"], **common))
+    return claims.model_dump()
+
+
+@app.function(image=policy_image, secrets=[capability_secret])
+def policy_credential_service(operation: str, payload: dict[str, Any]) -> Any:
+    """Trusted policy evaluator, capability signer, and replay gate."""
+
+    return _run_policy_credential_operation(operation, payload)
+
+
+class ModalPolicyAuthorizer:
+    """Gateway proxy; holds no policy state or capability signing key."""
+
+    @staticmethod
+    def _payload(
+        *,
+        tool: str,
+        tool_call_id: str,
+        arguments: dict[str, Any],
+        identity: Any,
+    ) -> dict[str, Any]:
+        return {
+            "tool": tool,
+            "tool_call_id": tool_call_id,
+            "arguments": arguments,
+            "identity": {
+                "adapter": identity.adapter,
+                "user_id": identity.user_id,
+                "tenant_id": identity.tenant_id,
+                "trust_level": identity.trust_level,
+                "audience": identity.audience,
+            },
+        }
+
+    def authorize(
+        self,
+        *,
+        tool: str,
+        tool_call_id: str,
+        arguments: dict[str, Any],
+        identity: Any,
+        ttl_seconds: int = 30,
+    ) -> str:
+        from glc.security.scoped_credentials import CredentialDenied
+
+        payload = self._payload(
+            tool=tool,
+            tool_call_id=tool_call_id,
+            arguments=arguments,
+            identity=identity,
+        )
+        payload["ttl_seconds"] = ttl_seconds
+        try:
+            credential = policy_credential_service.remote("authorize", payload)
+        except Exception as exc:
+            raise CredentialDenied("policy authorization failed") from exc
+        if not isinstance(credential, str):
+            raise CredentialDenied("policy authorization failed")
+        return credential
+
+    async def verify_and_consume(
+        self,
+        credential: str,
+        *,
+        tool: str,
+        tool_call_id: str,
+        arguments: dict[str, Any],
+        identity: Any,
+    ):
+        from glc.security.scoped_credentials import InvalidCredential, ScopedCredentialClaims
+
+        payload = self._payload(
+            tool=tool,
+            tool_call_id=tool_call_id,
+            arguments=arguments,
+            identity=identity,
+        )
+        payload["credential"] = credential
+        try:
+            claims = await asyncio.to_thread(
+                policy_credential_service.remote,
+                "verify",
+                payload,
+            )
+            return ScopedCredentialClaims.model_validate(claims)
+        except Exception as exc:
+            raise InvalidCredential("policy credential verification failed") from exc
 
 
 def _run_audit_operation(operation: str, payload: dict[str, Any]) -> Any:
@@ -310,7 +462,7 @@ class ModalAdapterSessionFactory:
 @app.function(
     image=gateway_image,
     volumes={"/data": data_volume},
-    secrets=[llm_secret, capability_secret],
+    secrets=[llm_secret],
     min_containers=0,  # scale to zero when idle -> protects the free tier
 )
 @modal.asgi_app()
@@ -321,15 +473,8 @@ def fastapi_app():
 
     from glc.audit import configure_store
     from glc.main import app as web  # the real glc_v1 app, imported as-is
-    from glc.security.scoped_credentials import (
-        ScopedActionAuthorizer,
-        ScopedCredentialAuthority,
-        signing_key_from_environment,
-    )
 
     configure_store(ModalAuditStore())
     web.state.adapter_session_factory = ModalAdapterSessionFactory()
-    web.state.scoped_action_authorizer = ScopedActionAuthorizer(
-        ScopedCredentialAuthority(signing_key_from_environment(), ModalNonceStore())
-    )
+    web.state.scoped_action_authorizer = ModalPolicyAuthorizer()
     return web

@@ -65,22 +65,25 @@ Audit writes use a separate `glc-audit` Volume mounted only by a single
 the writer reloads the Volume before SQLite access and commits after every
 operation.
 
-Create a separate gateway-only signing Secret before deployment. Generate at
-least 32 random bytes locally, then paste the value into this command:
+Create a separate policy-service-only signing Secret before deployment.
+Generate at least 32 random bytes locally, then paste the value into this
+command:
 
 ```sh
 uv run modal secret create glc-capability-signing-key \
   GLC_CAPABILITY_SIGNING_KEY='<random-value>'
 ```
 
-[`glc/security/scoped_credentials.py`](glc/security/scoped_credentials.py)
-authorizes final tool arguments through policy, then signs a credential bound
-to adapter, actual user, tenant, trust level, tool, tool-call ID, argument hash,
-audience, expiry, and nonce. Modal uses an atomic distributed nonce ledger, so a
-credential can be redeemed once across autoscaled gateway containers. Model
-`tool_calls` are proposals only in the current scaffold; they are returned to
-the authenticated caller and are not executed. Any future tool runner must use
-`app.state.scoped_action_authorizer` before dispatch.
+Modal runs policy evaluation, capability signing, and redemption in a dedicated
+`policy_credential_service` Function. It receives the signing Secret but no
+gateway Volume or provider keys. Gateway containers hold only a remote proxy,
+so rebinding their local Python policy functions cannot produce a valid
+credential. Credentials bind adapter, actual user, tenant, trust level, tool,
+tool-call ID, argument hash, audience, expiry, and nonce. An atomic distributed
+nonce ledger permits one redemption across all containers. Model `tool_calls`
+are proposals only in the current scaffold; they are returned to the
+authenticated caller and are not executed. Any future tool runner must redeem
+through `app.state.scoped_action_authorizer` immediately before dispatch.
 
 ## Where to look
 

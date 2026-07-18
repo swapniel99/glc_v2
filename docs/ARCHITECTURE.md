@@ -95,12 +95,15 @@ production refuses the local in-process fallback. Each optional adapter Secret
 must use its adapter-specific name and each Sandbox has an explicit egress
 allowlist or no network.
 
-Provider credentials and the capability-signing key remain gateway-only.
-`glc/security/scoped_credentials.py` evaluates policy against gateway-verified
-user, tenant, adapter, trust level, and final arguments before issuing a
-short-lived action credential. Signed scope includes trust level, tool-call ID,
-and argument hash. Redemption checks every claim and atomically consumes its
-nonce through a Modal Dict, preventing replay across gateway replicas.
+Provider credentials remain gateway-only. Policy evaluation, capability
+signing, and redemption run in a separate Modal Function with no provider
+Secret, gateway Volume, or writable policy mount. Only that policy Function
+receives the capability-signing key; gateway containers use a remote proxy.
+Rebinding a policy function in gateway or adapter Python therefore cannot mint
+a valid credential. Signed scope includes verified user, tenant, adapter, trust
+level, tool, tool-call ID, final argument hash, audience, and expiry. Redemption
+checks every claim and atomically consumes its nonce through a Modal Dict,
+preventing replay across containers.
 
 Current model tool calls are proposals, not executed actions. No endpoint lets
 an adapter mint credentials or submit self-claimed identity. Future action
@@ -110,4 +113,5 @@ before dispatch.
 Lives in: `modal_app.py`, `glc/channels/execution.py`,
 `glc/security/scoped_credentials.py`.
 Answers: shared provider-secret theft, cross-user/tenant confused deputy,
-changed-argument TOCTOU, cross-tool use, and credential replay.
+policy monkey-patching, changed-argument TOCTOU, cross-tool use, and credential
+replay.

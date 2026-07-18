@@ -121,7 +121,7 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
 - Attacker role: Compromised adapter.
 - Status: Verified deployed.
 - Evidence / fix:
-  - [`modal_app.py`](modal_app.py) keeps provider and capability-signing Secrets on the gateway Function only. Adapter Sandboxes receive neither gateway Secret nor gateway Volume. Adapter Secret mappings must exactly match `glc-adapter-<adapter-name>`, preventing provider, signing, or cross-adapter Secret mapping.
+  - [`modal_app.py`](modal_app.py) keeps provider Secrets on the gateway Function and the capability-signing Secret on the isolated policy Function. Adapter Sandboxes receive neither trusted Secret nor gateway Volume. Adapter Secret mappings must exactly match `glc-adapter-<adapter-name>`, preventing provider, signing, or cross-adapter Secret mapping.
   - [`glc/channels/execution.py`](glc/channels/execution.py) rejects the in-process adapter fallback outside development, so a missing production Sandbox factory fails closed.
   - [`glc/security/scoped_credentials.py`](glc/security/scoped_credentials.py) evaluates policy against gateway-verified identity and final arguments. Issued credentials bind adapter, user, tenant, trust level, tool, tool-call ID, canonical argument hash, audience, expiry, and random nonce. `deny` and `require_approval` issue nothing.
   - Modal redemption uses `Dict.put(skip_if_exists=True)` as an atomic distributed consume operation, preventing replay across autoscaled gateway replicas. Expired nonce records are purged daily.
@@ -180,4 +180,25 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
   - [`glc/channels/catalogue/twilio_sms/tests/test_webhook_route.py`](glc/channels/catalogue/twilio_sms/tests/test_webhook_route.py) verifies the bridge fails closed without `GLC_CHANNEL_CREDENTIAL` instead of loading the installation token.
   - Focused security suite: 31 passed.
   - Full suite with an explicit writable test ledger (`GLC_GATEWAY_DB=/private/tmp/glc-v2-full-suite.sqlite`): 311 passed.
+  - Focused Ruff checks and `git diff --check` passed.
+
+### Leak 5: Policy Engine Monkey-Patching
+
+- Source: [`ISSUES_TO_FIX.md`](ISSUES_TO_FIX.md), inherited Leak 5; not a new Part 2 finding.
+- Finding: Modal gateway containers evaluated policy and held the capability-signing key in the same Python process. Rebinding the local evaluator could turn a denied action into a signed credential.
+- Reference invariant(s): 2, 6.
+- Attacker role: Gateway code execution; compromised adapters remain isolated in separate Sandboxes.
+- Status: Fixed locally; deployment re-check pending.
+- Evidence / fix:
+  - [`modal_app.py`](modal_app.py) runs policy evaluation, capability issuance, and credential redemption in a dedicated `policy_credential_service` Modal Function.
+  - Only the policy Function receives `glc-capability-signing-key`. It mounts no gateway Volume and uses bundled, immutable `policy.yaml`; the gateway receives only provider keys and a remote authorizer proxy.
+  - The service accepts an exact request schema containing verified identity, final tool arguments, tool-call ID, and TTL or credential. Unknown or malformed fields fail closed.
+  - Denied and approval-required decisions issue nothing. Authorization or verification transport failures become denial rather than local fallback.
+  - Signed credentials remain bound to every action dimension and are redeemed through the policy service's atomic Modal nonce ledger.
+- Verification record:
+  - [`tests/test_modal_policy_service.py`](tests/test_modal_policy_service.py) verifies Secret and Volume separation, policy denial, exact-action issue/redemption, strict request fields, remote forwarding, and fail-closed authorization and verification.
+  - [`tests/test_scoped_credentials.py`](tests/test_scoped_credentials.py) continues to verify signature, scope, expiry, policy, and replay behavior.
+  - Focused policy and credential suite: 27 passed.
+  - Broader security suite: 46 passed.
+  - Full suite with an explicit writable test ledger (`GLC_GATEWAY_DB=/private/tmp/glc-v2-full-suite-leak5.sqlite`): 318 passed.
   - Focused Ruff checks and `git diff --check` passed.

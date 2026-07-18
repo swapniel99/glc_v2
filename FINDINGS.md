@@ -128,3 +128,21 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
   - Current chat `tool_calls` remain proposals and are not executed. No adapter-facing credential-mint endpoint exists; future action handlers must use the injected gateway authorizer.
   - [`tests/test_scoped_credentials.py`](tests/test_scoped_credentials.py) covers signature tampering, changed tool/call/arguments, wrong adapter/user/tenant/trust/audience, expiry, replay, concurrent redemption, policy denial, atomic Modal consumption, strict Secret mapping, and production fallback rejection.
 - Deployment verification: deployed gateway returned `200 OK` from `/healthz` with no signing-key configuration error in Modal logs. Inside the live gateway container, the scoped-credential probe rejected changed final arguments, accepted the correctly scoped first redemption, and rejected replay of the consumed credential. Earlier live adapter evidence also confirmed no gateway provider Secrets or gateway Volume were visible from the WhatsApp Sandbox.
+
+## F-008: Non-Reproducible Modal Images
+
+- Finding: Modal gateway and adapter images used a mutable Debian base and installed dependency ranges from `pyproject.toml`, allowing image contents and resolved package versions to drift between reviewed deployments.
+- Reference invariant(s): 8.
+- Attacker role: Outsider.
+- Access prerequisite: Ability to alter dependency resolution or mutable upstream image content through a compromised package or registry release path.
+- Status: Fixed locally; deployment re-check pending.
+- Fix commit: `ab3592d`.
+- Evidence / fix:
+  - [`modal_app.py`](modal_app.py) pins the Debian `bookworm-slim` Linux amd64 manifest by SHA-256 digest for both gateway and adapter images.
+  - Both images use Modal `uv_sync(..., frozen=True)` with the committed [`uv.lock`](uv.lock), replacing `pip_install_from_pyproject` dependency-range resolution.
+  - Import fails if `uv.lock` is absent. The image builder also pins `uv` to `0.11.29` and excludes development dependencies.
+- Verification record:
+  - `docker-buildx imagetools inspect debian:bookworm-slim` confirmed the pinned digest is the current `linux/amd64` manifest.
+  - `UV_CACHE_DIR=/tmp/glc-v2-uv-cache uv lock --check --offline` resolved all 167 locked packages without changing the lockfile.
+  - `ruff check modal_app.py`, `git diff --check`, syntax parsing, and importing `modal_app` passed locally.
+  - Remote Modal image build and deployment verification remain pending.

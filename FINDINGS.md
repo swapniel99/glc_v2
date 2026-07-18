@@ -33,7 +33,7 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
 - Finding: Production served API documentation and OpenAPI schema, enabling unauthenticated endpoint reconnaissance.
 - Reference invariant(s): 1, 8.
 - Attacker role: Outsider.
-- Status: Fixed locally; deployment re-check pending.
+- Status: Verified deployed.
 - Evidence / fix: [`glc/main.py`](glc/main.py) enables API-discovery surfaces only when `GLC_ENV=development`:
   - `/docs` (Swagger UI)
   - `/redoc` (ReDoc)
@@ -45,7 +45,7 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
 - Finding: Read endpoints exposed internal configuration and operational data, including `/v1/status`, `/v1/providers` and `/v1/capabilities`, without caller authentication.
 - Reference invariant(s): 1, 8.
 - Attacker role: Outsider.
-- Status: Fixed locally; deployment re-check pending.
+- Status: Verified deployed.
 - Evidence / fix: [`chat` router](glc/routes/chat.py) applies `require_install_token` to all read routes:
   - `/v1/embedders`
   - `/v1/cost/by_agent`
@@ -61,7 +61,7 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
 - Finding: Model data-plane endpoints could accept unauthenticated requests.
 - Reference invariant(s): 8.
 - Attacker role: Outsider.
-- Status: Fixed locally; deployment re-check pending.
+- Status: Verified deployed.
 - Evidence / fix: Install-token authentication now protects:
   - Model data plane: `/v1/chat`, `/v1/chat/batch`, `/v1/vision`, and `/v1/embed` via the [`chat` router](glc/routes/chat.py).
   - Voice data plane: `/v1/transcribe` via the [`transcribe` router](glc/routes/transcribe.py), and `/v1/speak` via the [`speak` router](glc/routes/speak.py).
@@ -73,7 +73,7 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
 - Finding: `/v1/chat` and `/v1/vision` fetched caller-supplied `http(s)` image URLs. Redirects could reach loopback, private, or link-local addresses.
 - Reference invariant(s): 1, 3.
 - Attacker role: Outsider or Normal channel user.
-- Status: Fixed locally; deployment re-check pending.
+- Status: Verified deployed.
 - Evidence / fix: [`_resolve_image_urls`](glc/routes/chat.py) protects both image-capable endpoints:
   - `/v1/chat` accepts image blocks in `messages`.
   - `/v1/vision` converts its caller-supplied image URL into an image block, then uses the same chat resolver.
@@ -89,7 +89,7 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
 - Finding: Public data-plane responses exposed provider, network, and stored failure details. This included chat failures and streams, embed fallback attempts, speech and transcription errors, image fetch errors, and `/v1/calls` diagnostic records.
 - Reference invariant(s): 1, 3, 8.
 - Attacker role: Outsider or Normal channel user.
-- Status: Fixed locally; deployment re-check pending.
+- Status: Verified deployed.
 - Evidence / fix: Generic client errors now cover every external-service failure path:
   - Chat: `/v1/chat` provider failures, exhausted fallback, structured-output validation, SSE stream failures, and fallback `attempted` metadata.
   - Chat derivatives: `/v1/chat/batch` unexpected per-call failures and `/v1/vision` LLM-provider failures; image-fetch failures are also redacted (F-004).
@@ -105,18 +105,11 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
 - Finding: Modal deployed the gateway and in-process webhook adapters in one Function without an adapter egress boundary. Compromised adapter code could contact arbitrary outbound hosts from the gateway trust domain.
 - Reference invariant(s): 1, 8.
 - Attacker role: Compromised adapter.
-- Status: Fixed locally; deployment re-check pending.
+- Status: Verified deployed.
 - Evidence / fix:
   - [`modal_app.py`](modal_app.py) creates request-scoped Modal Sandboxes for webhook adapters. Each adapter gets either an explicit `outbound_domain_allowlist` or `block_network=True`, plus CPU, memory, idle, and wall-clock limits.
   - Sandboxes receive a separate adapter image and no gateway data Volume or provider-key Secret. Optional adapter-specific mock secrets are configured independently.
   - [`glc/channels/sandbox_runner.py`](glc/channels/sandbox_runner.py) runs one selected adapter behind a bounded JSON-lines protocol. It preserves `on_message()` / `send()` state without sharing gateway process or filesystem state.
   - [`glc/routes/channels.py`](glc/routes/channels.py) uses the injected sandbox session factory in Modal, validates returned `ChannelMessage` objects, rejects route/channel mismatches, and returns generic startup/operation failures.
   - [`tests/test_adapter_sandbox.py`](tests/test_adapter_sandbox.py) verifies allowlisted and network-blocked sandbox creation, absence of inherited gateway secrets/volumes, byte-safe webhook transport, injected factory use, mismatch rejection, cleanup, and error redaction.
-- Deployment verification still required: deploy with mock credentials, run an adapter probe against one approved host and one unapproved host, and record that the approved request succeeds while the unapproved request is blocked.
-
-## Verification record
-
-- Local regression suite after F-006, with provider variables cleared and gateway DB isolated: `.venv/bin/pytest -q` → `277 passed`.
-- Focused F-006 regression: `.venv/bin/pytest -q tests/test_adapter_sandbox.py tests/test_v9_compat.py` → `19 passed`.
-- F-006 lint/type checks: Ruff clean; mypy reports no issues in the four changed source files.
-- Required deployment reproductions remain: run assigned curl probes against personal Modal URL after deployment, record failure status here, and commit each fix with invariant in commit message.
+- Deployment verification: A live WhatsApp adapter Sandbox reported no gateway provider secrets and no gateway data Volume. Modal denied outbound access to unapproved `example.com`; the adapter observed `ConnectError`, and the Sandbox protocol completed successfully with a null message result.

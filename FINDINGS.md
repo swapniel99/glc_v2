@@ -100,8 +100,23 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
   - Raw provider/network detail is retained in server logs. Chat and embed failures remain in internal call ledger records; TTS and STT routes log their exception detail.
   - [`tests/test_chat_error_privacy.py`](tests/test_chat_error_privacy.py) covers chat response/log separation, fallback redaction, and streaming. [`tests/test_api_error_privacy.py`](tests/test_api_error_privacy.py) covers embeddings, TTS, STT, batch, image fetch, and diagnostics redaction.
 
+## F-006: Unbounded Adapter Egress
+
+- Finding: Modal deployed the gateway and in-process webhook adapters in one Function without an adapter egress boundary. Compromised adapter code could contact arbitrary outbound hosts from the gateway trust domain.
+- Reference invariant(s): 1, 8.
+- Attacker role: Compromised adapter.
+- Status: Fixed locally; deployment re-check pending.
+- Evidence / fix:
+  - [`modal_app.py`](modal_app.py) creates request-scoped Modal Sandboxes for webhook adapters. Each adapter gets either an explicit `outbound_domain_allowlist` or `block_network=True`, plus CPU, memory, idle, and wall-clock limits.
+  - Sandboxes receive a separate adapter image and no gateway data Volume or provider-key Secret. Optional adapter-specific mock secrets are configured independently.
+  - [`glc/channels/sandbox_runner.py`](glc/channels/sandbox_runner.py) runs one selected adapter behind a bounded JSON-lines protocol. It preserves `on_message()` / `send()` state without sharing gateway process or filesystem state.
+  - [`glc/routes/channels.py`](glc/routes/channels.py) uses the injected sandbox session factory in Modal, validates returned `ChannelMessage` objects, rejects route/channel mismatches, and returns generic startup/operation failures.
+  - [`tests/test_adapter_sandbox.py`](tests/test_adapter_sandbox.py) verifies allowlisted and network-blocked sandbox creation, absence of inherited gateway secrets/volumes, byte-safe webhook transport, injected factory use, mismatch rejection, cleanup, and error redaction.
+- Deployment verification still required: deploy with mock credentials, run an adapter probe against one approved host and one unapproved host, and record that the approved request succeeds while the unapproved request is blocked.
+
 ## Verification record
 
-- Local regression suite after F-005: `uv run pytest` → `271 passed`.
-- Lint after F-005: `uv run ruff check glc/routes/chat.py glc/routes/speak.py glc/routes/transcribe.py glc/embedders.py tests/test_api_error_privacy.py tests/test_chat_error_privacy.py` → clean.
+- Local regression suite after F-006, with provider variables cleared and gateway DB isolated: `.venv/bin/pytest -q` → `277 passed`.
+- Focused F-006 regression: `.venv/bin/pytest -q tests/test_adapter_sandbox.py tests/test_v9_compat.py` → `19 passed`.
+- F-006 lint/type checks: Ruff clean; mypy reports no issues in the four changed source files.
 - Required deployment reproductions remain: run assigned curl probes against personal Modal URL after deployment, record failure status here, and commit each fix with invariant in commit message.

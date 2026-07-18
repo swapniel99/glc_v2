@@ -20,6 +20,25 @@ uv run glc serve        # gateway on http://localhost:8111
 
 To deploy on Modal, see `modal_app.py` and Session 12 Section 6. Use mock keys only, and never put real provider keys on Modal.
 
+### Modal adapter isolation
+
+Webhook adapters run in request-scoped Modal Sandboxes. Each sandbox receives
+an explicit outbound-domain allowlist, no gateway data Volume, and no provider
+secret. Adapters with an empty domain list have networking disabled.
+
+Deployment-specific domains and per-adapter mock secrets can be supplied while
+deploying. Values are JSON maps keyed by adapter name; domains contain hostnames
+only, without schemes, paths, or ports.
+
+```sh
+export GLC_MODAL_ADAPTER_EGRESS_JSON='{"imap":["imap.example.test","smtp.example.test"]}'
+export GLC_MODAL_ADAPTER_SECRETS_JSON='{"telegram":"glc-adapter-telegram"}'
+uv run modal deploy modal_app.py
+```
+
+Never map `glc-llm-keys` as an adapter secret. A missing adapter secret remains
+fail-closed rather than inheriting the gateway secret.
+
 ## Where to look
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — trust boundaries and data flows. Start here for recon.

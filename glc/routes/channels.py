@@ -16,20 +16,22 @@ from __future__ import annotations
 
 import hmac
 import json
+import logging
 import os
 
 from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from glc.audit import append as audit_append
-from glc.channels import registry
 from glc.channels.envelope import ChannelMessage, ChannelReply
+from glc.channels.execution import open_adapter_session
 from glc.config import get_or_create_install_token
 from glc.security.allowlists import allowed
 from glc.security.pairing import get_pairing_store
 from glc.security.rate_limits import get_rate_limiter
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 @router.websocket("/v1/channels/{name}")
@@ -133,63 +135,80 @@ async def channel_webhook_verify(name: str, request: Request):
 @router.post("/v1/channels/{name}/webhook")
 async def channel_webhook(name: str, request: Request):
     try:
-        adapter = registry.instantiate(name)
+        adapter = await open_adapter_session(request.app.state, name)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"unknown channel: {name}") from None
+    except Exception:
+        logger.exception("failed to start channel adapter channel=%s", name)
+        raise HTTPException(status_code=502, detail="channel adapter unavailable") from None
 
-    raw = {
-        "raw_body": await request.body(),
-        "headers": dict(request.headers),
-    }
-    msg = await adapter.on_message(raw)
-    if msg is None:
-        return {"status": "ok"}
+    try:
+        raw = {
+            "raw_body": await request.body(),
+            "headers": dict(request.headers),
+        }
+        msg = await adapter.on_message(raw)
+        if msg is None:
+            return {"status": "ok"}
+        if msg.channel != name:
+            logger.warning("adapter channel mismatch route=%s envelope=%s", name, msg.channel)
+            raise HTTPException(status_code=502, detail="channel adapter returned an invalid response")
 
-    limiter = get_rate_limiter()
-    pairings = get_pairing_store()
-    owners = [p.channel_user_id for p in pairings.owners(channel=name)]
+        limiter = get_rate_limiter()
+        pairings = get_pairing_store()
+        owners = [p.channel_user_id for p in pairings.owners(channel=name)]
 
-    ok, why = allowed(
-        msg.channel,
-        msg.channel_user_id,
-        owner_ids=owners,
-        is_public_channel=bool(msg.metadata.get("is_public_channel", False)),
-        was_mentioned=bool(msg.metadata.get("was_mentioned", False)),
-    )
-    if not ok:
+        ok, why = allowed(
+            msg.channel,
+            msg.channel_user_id,
+            owner_ids=owners,
+            is_public_channel=bool(msg.metadata.get("is_public_channel", False)),
+            was_mentioned=bool(msg.metadata.get("was_mentioned", False)),
+        )
+        if not ok:
+            audit_append(
+                channel=msg.channel,
+                channel_user_id=msg.channel_user_id,
+                trust_level=msg.trust_level,
+                event_type="allowlist_drop",
+                result={"reason": why},
+            )
+            return {"status": "ok"}
+
+        ok, why = limiter.check_message(msg.channel, msg.channel_user_id)
+        if not ok:
+            audit_append(
+                channel=msg.channel,
+                channel_user_id=msg.channel_user_id,
+                trust_level=msg.trust_level,
+                event_type="rate_limit",
+                result={"reason": why},
+            )
+            return JSONResponse(status_code=429, content={"error": why})
+
         audit_append(
             channel=msg.channel,
             channel_user_id=msg.channel_user_id,
             trust_level=msg.trust_level,
-            event_type="allowlist_drop",
-            result={"reason": why},
+            event_type="inbound_message",
+            params={"text": msg.text, "thread_id": msg.thread_id, "provider": msg.metadata.get("provider")},
         )
-        return {"status": "ok"}
 
-    ok, why = limiter.check_message(msg.channel, msg.channel_user_id)
-    if not ok:
-        audit_append(
+        reply = ChannelReply(
             channel=msg.channel,
             channel_user_id=msg.channel_user_id,
-            trust_level=msg.trust_level,
-            event_type="rate_limit",
-            result={"reason": why},
+            text=f"[glc echo] {msg.text or ''}",
+            thread_id=msg.thread_id,
         )
-        return JSONResponse(status_code=429, content={"error": why})
-
-    audit_append(
-        channel=msg.channel,
-        channel_user_id=msg.channel_user_id,
-        trust_level=msg.trust_level,
-        event_type="inbound_message",
-        params={"text": msg.text, "thread_id": msg.thread_id, "provider": msg.metadata.get("provider")},
-    )
-
-    reply = ChannelReply(
-        channel=msg.channel,
-        channel_user_id=msg.channel_user_id,
-        text=f"[glc echo] {msg.text or ''}",
-        thread_id=msg.thread_id,
-    )
-    await adapter.send(reply)
-    return {"status": "ok"}
+        await adapter.send(reply)
+        return {"status": "ok"}
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("channel adapter failed channel=%s", name)
+        raise HTTPException(status_code=502, detail="channel adapter unavailable") from None
+    finally:
+        try:
+            await adapter.close()
+        except Exception:
+            logger.exception("failed to close channel adapter channel=%s", name)

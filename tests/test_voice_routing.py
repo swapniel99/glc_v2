@@ -77,8 +77,11 @@ async def test_transcribe_local_routes_to_whisper_cpp():
 
 @pytest.mark.asyncio
 async def test_transcribe_default_when_stub_returns_501():
-    # No provider registered -> the catalogue stub raises NotImplementedError
-    # which the dispatcher translates into an STTError(status=501).
+    class Stub(STTProvider):
+        async def transcribe(self, audio, mime):
+            raise NotImplementedError("stub")
+
+    register_stt("groq_whisper", Stub())
     with pytest.raises(STTError) as ei:
         await transcribe(b"\x00", "audio/wav", prefer="default")
     assert ei.value.status == 501

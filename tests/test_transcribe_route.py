@@ -70,8 +70,13 @@ def test_transcribe_provider_error_becomes_502(app_client, auth_headers):
 
 
 def test_transcribe_stub_returns_501(app_client, auth_headers):
-    """No provider registered — the catalogue stub raises
-    NotImplementedError, dispatcher converts to status=501."""
+    """A catalogue stub raises NotImplementedError, which the dispatcher
+    converts to status=501."""
+    class Stub(STTProvider):
+        async def transcribe(self, audio, mime):
+            raise NotImplementedError("stub")
+
+    register_test_provider("groq_whisper", Stub())
     body = {"audio_b64": base64.b64encode(b"\x00").decode(), "mime": "audio/wav", "prefer": "default"}
     r = app_client.post("/v1/transcribe", json=body, headers=auth_headers)
     assert r.status_code == 501

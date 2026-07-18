@@ -65,3 +65,13 @@ def test_pair_bad_trust_level_400(app_client, install_token):
         json={"channel": "x", "channel_user_id": "1", "trust_level": "untrusted"},
     )
     assert r.status_code == 400
+
+
+def test_channel_credential_rejects_invalid_channel(app_client, install_token):
+    response = app_client.post(
+        "/v1/control/channels/INVALID/credential",
+        headers={"Authorization": f"Bearer {install_token}"},
+        json={"ttl_seconds": 60},
+    )
+
+    assert response.status_code == 400

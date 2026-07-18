@@ -1,9 +1,8 @@
 """WS /v1/channels/{name} — adapter control plane.
 
-Adapters connect over WebSocket and exchange JSON-serialised
-ChannelMessage and ChannelReply envelopes. The connection is gated by
-the installation token presented in the Authorization header (Sec-Websocket
-clients can pass it as a query string fallback, ?token=...).
+Adapters connect over WebSocket and exchange JSON-serialised ChannelMessage
+and ChannelReply envelopes. Connections require a short-lived credential
+scoped to the route channel and presented in the Authorization header.
 
 This endpoint is the contract surface adapters speak to. The gateway
 processes incoming messages through the rate limiter, allowlist,
@@ -14,19 +13,21 @@ back so adapter authors can verify their wire is plumbed correctly.
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
 import logging
 import os
+import time
 
-from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from glc.audit import append as audit_append
 from glc.channels.envelope import ChannelMessage, ChannelReply
 from glc.channels.execution import open_adapter_session
-from glc.config import get_or_create_install_token
 from glc.security.allowlists import allowed
+from glc.security.channel_credentials import InvalidChannelCredential, verify_channel_credential
 from glc.security.pairing import get_pairing_store
 from glc.security.rate_limits import get_rate_limiter
 
@@ -35,15 +36,14 @@ logger = logging.getLogger(__name__)
 
 
 @router.websocket("/v1/channels/{name}")
-async def channel_ws(websocket: WebSocket, name: str, token: str | None = Query(default=None)):
+async def channel_ws(websocket: WebSocket, name: str):
     header_auth = websocket.headers.get("authorization") or websocket.headers.get("Authorization")
-    presented = None
+    presented = ""
     if header_auth and header_auth.startswith("Bearer "):
         presented = header_auth.removeprefix("Bearer ").strip()
-    elif token:
-        presented = token
-    expected = get_or_create_install_token()
-    if presented != expected:
+    try:
+        credential_claims = verify_channel_credential(presented, channel=name)
+    except InvalidChannelCredential:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
@@ -60,12 +60,34 @@ async def channel_ws(websocket: WebSocket, name: str, token: str | None = Query(
 
     try:
         while True:
-            raw = await websocket.receive_text()
+            remaining_seconds = credential_claims.expires_at - time.time()
+            if remaining_seconds <= 0:
+                await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                return
+            try:
+                raw = await asyncio.wait_for(
+                    websocket.receive_text(),
+                    timeout=remaining_seconds,
+                )
+            except TimeoutError:
+                await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                return
             try:
                 payload = json.loads(raw)
                 env = ChannelMessage.model_validate(payload)
             except Exception as e:
                 await websocket.send_text(json.dumps({"error": f"invalid envelope: {e}"}))
+                continue
+
+            if env.channel != name:
+                audit_append(
+                    channel=name,
+                    channel_user_id=env.channel_user_id,
+                    trust_level=env.trust_level,
+                    event_type="channel_mismatch",
+                    result={"envelope_channel": env.channel},
+                )
+                await websocket.send_text(json.dumps({"error": "channel does not match route"}))
                 continue
 
             ok, why = allowed(

@@ -2,6 +2,7 @@
 
 Runs an external client process that connects to Discord's Gateway (WebSocket)
 and routes messages to/from the local GLC Gateway server over a WebSocket.
+Requires GLC_CHANNEL_CREDENTIAL scoped to discord.
 """
 
 from __future__ import annotations
@@ -19,7 +20,6 @@ from dotenv import load_dotenv
 
 from glc.channels.catalogue.discord.adapter import Adapter
 from glc.channels.envelope import ChannelReply
-from glc.config import get_or_create_install_token
 
 # Load environment variables from .env at repository root
 load_dotenv(Path(__file__).resolve().parents[5] / ".env")
@@ -115,17 +115,23 @@ async def run_bridge():
         print("Please set it in your environment or .env file before running.", file=sys.stderr)
         return
 
-    # 1. Retrieve the GLC local install token to authorize with the GLC gateway
-    install_token = get_or_create_install_token()
+    # 1. Read a short-lived credential scoped to the Discord channel.
+    channel_credential = os.environ.get("GLC_CHANNEL_CREDENTIAL", "")
+    if not channel_credential:
+        print("ERROR: GLC_CHANNEL_CREDENTIAL environment variable is not set.", file=sys.stderr)
+        return
     glc_port = os.environ.get("GLC_PORT", "8111")
-    glc_ws_url = f"ws://localhost:{glc_port}/v1/channels/discord?token={install_token}"
+    glc_ws_url = f"ws://localhost:{glc_port}/v1/channels/discord"
 
     # 2. Instantiate client and adapter
     client = RealDiscordClient(token=bot_token)
     adapter = Adapter(config={"client": client})
 
     print("[bridge] connecting to local GLC gateway...")
-    async with websockets.connect(glc_ws_url) as glc_ws:
+    async with websockets.connect(
+        glc_ws_url,
+        additional_headers={"Authorization": f"Bearer {channel_credential}"},
+    ) as glc_ws:
         print("[bridge] connected to GLC gateway. Connecting to Discord WebSocket gateway...")
 
         # 3. Connect to Discord Gateway

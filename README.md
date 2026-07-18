@@ -41,6 +41,25 @@ become hyphens). Put only that adapter's platform credentials in it. Gateway
 Secrets such as `glc-llm-keys` and another adapter's Secret are rejected. A
 missing adapter Secret remains fail-closed rather than inheriting one.
 
+External WebSocket adapters never receive the installation/control token.
+An authenticated operator mints a short-lived credential scoped to one channel,
+then passes only that credential to the adapter:
+
+```sh
+INSTALL_TOKEN="$(uv run glc token)"
+export GLC_CHANNEL_CREDENTIAL="$(
+  curl -fsS -X POST http://localhost:8111/v1/control/channels/telegram/credential \
+    -H "Authorization: Bearer $INSTALL_TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d '{"ttl_seconds":300}' | jq -r .credential
+)"
+unset INSTALL_TOKEN
+```
+
+Credentials expire after at most five minutes and cannot authenticate another
+channel. WebSocket query-string authentication and installation-token
+authentication are rejected.
+
 Audit writes use a separate `glc-audit` Volume mounted only by a single
 `audit_writer` Function. Autoscaled gateway replicas call that writer remotely;
 the writer reloads the Volume before SQLite access and commits after every

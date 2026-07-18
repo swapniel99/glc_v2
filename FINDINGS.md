@@ -158,3 +158,26 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
   - `audit_writer` is capped at one container and one concurrent input. Autoscaled gateway replicas use a store-compatible remote proxy and never mount or open the audit SQLite file.
   - Writer reloads its Volume before every operation, closes SQLite connections, then explicitly commits the Volume snapshot.
   - [`tests/test_modal_audit_writer.py`](tests/test_modal_audit_writer.py) verifies reload/commit durability behavior, remote forwarding, and gateway/audit Volume separation.
+
+## Inherited Leak Remediations
+
+### Leak 4: Adapter Access To Installation/Control Token
+
+- Source: [`ISSUES_TO_FIX.md`](ISSUES_TO_FIX.md), inherited Leak 4; not a new Part 2 finding.
+- Finding: Legacy WebSocket adapter bridges loaded the installation token directly, and `/v1/channels/{name}` accepted that master token through either an Authorization header or query parameter. Compromising one such adapter exposed a credential valid across gateway control and data-plane routes.
+- Reference invariant(s): 2, 4.
+- Attacker role: Compromised adapter.
+- Status: Fixed locally; deployment re-check pending.
+- Evidence / fix:
+  - [`glc/security/channel_credentials.py`](glc/security/channel_credentials.py) issues HMAC-signed WebSocket credentials bound to one channel, a fixed audience, issue and expiry times, and a random nonce. Default lifetime is 60 seconds; maximum lifetime is five minutes.
+  - [`glc/routes/control.py`](glc/routes/control.py) exposes credential minting only through `/v1/control/channels/{channel}/credential`, authenticated with the installation token. Adapter processes receive only the resulting scoped credential.
+  - [`glc/routes/channels.py`](glc/routes/channels.py) rejects missing credentials, the installation token itself, query-string credentials, invalid signatures, expired credentials, and credentials scoped to another channel. Active WebSocket sessions close when their credential expires.
+  - Route/channel mismatch is rejected and audited, preventing a valid credential for one route from carrying an envelope for another channel.
+  - External Twilio SMS, Telegram, and Discord bridge code now reads only `GLC_CHANNEL_CREDENTIAL`; no channel adapter code imports or calls `get_or_create_install_token()`.
+  - [`README.md`](README.md) documents operator-side minting and passing only the scoped credential to an adapter.
+- Verification record:
+  - [`tests/test_channel_credentials.py`](tests/test_channel_credentials.py) covers channel binding, tampering, excessive lifetime, authenticated issuance, rejection of missing/master/query/wrong-channel credentials, successful scoped authentication, cross-channel envelope rejection, and active-session expiry.
+  - [`glc/channels/catalogue/twilio_sms/tests/test_webhook_route.py`](glc/channels/catalogue/twilio_sms/tests/test_webhook_route.py) verifies the bridge fails closed without `GLC_CHANNEL_CREDENTIAL` instead of loading the installation token.
+  - Focused security suite: 31 passed.
+  - Full suite with an explicit writable test ledger (`GLC_GATEWAY_DB=/private/tmp/glc-v2-full-suite.sqlite`): 311 passed.
+  - Focused Ruff checks and `git diff --check` passed.

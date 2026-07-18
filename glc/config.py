@@ -42,8 +42,7 @@ def install_token_path() -> Path:
 
 
 def get_or_create_install_token() -> str:
-    """Per-installation token used to authenticate WS adapter connections
-    and /v1/control/* requests. Generated once and persisted to disk."""
+    """Per-installation token used by control and data-plane API clients."""
     p = install_token_path()
     if p.exists():
         return p.read_text().strip()

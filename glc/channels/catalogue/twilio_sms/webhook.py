@@ -73,22 +73,25 @@ async def gateway_roundtrip(
     *,
     host: str = "localhost",
     port: int = 8111,
-    token: str | None = None,
+    credential: str | None = None,
 ) -> ChannelReply | dict[str, Any]:
     """Ship a ChannelMessage to the GLC gateway over WS and read the reply.
 
     Connects as a WebSocket client to `ws://{host}:{port}/v1/channels/<name>`,
-    authenticating with the install token, sends the envelope JSON, and reads
-    one response frame. Returns a ChannelReply on the normal echo path, or the
-    raw dict when the gateway dropped/limited the message (`error`/`status`).
+    authenticating with a short-lived channel credential, sends the envelope,
+    and reads one response frame. Returns a ChannelReply on the normal echo
+    path, or the raw dict when the gateway dropped/limited the message.
     """
     import websockets
 
-    from glc.config import get_or_create_install_token
-
-    token = token or get_or_create_install_token()
+    credential = credential or os.getenv("GLC_CHANNEL_CREDENTIAL", "")
+    if not credential:
+        raise RuntimeError("GLC_CHANNEL_CREDENTIAL is required")
     uri = f"ws://{host}:{port}/v1/channels/{envelope.channel}"
-    async with websockets.connect(uri, additional_headers={"Authorization": f"Bearer {token}"}) as ws:
+    async with websockets.connect(
+        uri,
+        additional_headers={"Authorization": f"Bearer {credential}"},
+    ) as ws:
         await ws.send(envelope.model_dump_json())
         raw = await ws.recv()
 

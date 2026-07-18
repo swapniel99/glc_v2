@@ -17,6 +17,7 @@ from glc.channels.catalogue.twilio_sms.webhook import (
     WEBHOOK_PATH,
     build_app,
     compute_signature,
+    gateway_roundtrip,
 )
 from glc.channels.envelope import ChannelMessage
 
@@ -88,6 +89,15 @@ def test_missing_signature_rejected_403():
 
     assert resp.status_code == 403
     assert seen == []
+
+
+@pytest.mark.asyncio
+async def test_gateway_roundtrip_requires_scoped_channel_credential(monkeypatch):
+    monkeypatch.delenv("GLC_CHANNEL_CREDENTIAL", raising=False)
+    message = await FakeAdapter().on_message({"From": "+19999999999", "Body": "hi"})
+
+    with pytest.raises(RuntimeError, match="GLC_CHANNEL_CREDENTIAL is required"):
+        await gateway_roundtrip(message)
 
 
 def test_skip_sig_env_bypasses_verification(monkeypatch):

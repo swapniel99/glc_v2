@@ -12,9 +12,15 @@ import signal
 import time
 
 from fastapi import APIRouter, Header, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from glc.security.auth import require_install_token
+from glc.security.channel_credentials import (
+    CHANNEL_CREDENTIAL_TTL_SECONDS,
+    MAX_CHANNEL_CREDENTIAL_TTL_SECONDS,
+    InvalidChannelCredential,
+    issue_channel_credential,
+)
 from glc.security.pairing import CODE_TTL_SECONDS, get_pairing_store
 
 router = APIRouter()
@@ -35,6 +41,43 @@ class PairResponse(BaseModel):
 
 class PairConfirmRequest(BaseModel):
     code: str
+
+
+class ChannelCredentialRequest(BaseModel):
+    ttl_seconds: int = Field(
+        default=CHANNEL_CREDENTIAL_TTL_SECONDS,
+        ge=1,
+        le=MAX_CHANNEL_CREDENTIAL_TTL_SECONDS,
+    )
+
+
+class ChannelCredentialResponse(BaseModel):
+    credential: str
+    channel: str
+    expires_at: int
+    ttl_seconds: int
+
+
+@router.post(
+    "/v1/control/channels/{channel}/credential",
+    response_model=ChannelCredentialResponse,
+)
+async def channel_credential(
+    channel: str,
+    req: ChannelCredentialRequest,
+    authorization: str | None = Header(default=None),
+):
+    require_install_token(authorization)
+    try:
+        credential, claims = issue_channel_credential(channel, ttl_seconds=req.ttl_seconds)
+    except InvalidChannelCredential as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return ChannelCredentialResponse(
+        credential=credential,
+        channel=claims.channel,
+        expires_at=claims.expires_at,
+        ttl_seconds=claims.expires_at - claims.issued_at,
+    )
 
 
 @router.post("/v1/control/pair", response_model=PairResponse)

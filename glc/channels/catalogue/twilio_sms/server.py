@@ -18,6 +18,7 @@ Env:
     GLC_PUBLIC_BASE          the ngrok https URL (serves /artifacts for outbound MMS)
     GLC_TWILIO_WEBHOOK_PORT  receiver port (default 8200)
     GLC_GATEWAY_HOST/PORT    gateway location (default localhost:8111)
+    GLC_CHANNEL_CREDENTIAL   short-lived twilio_sms gateway credential
     GLC_TWILIO_SKIP_SIG=1    dev-only: skip signature verification
 """
 

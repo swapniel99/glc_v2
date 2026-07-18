@@ -2,6 +2,7 @@
 
 Requires:
   - TELEGRAM_BOT_TOKEN env variable.
+  - GLC_CHANNEL_CREDENTIAL scoped to telegram.
   - A running GLC gateway (uv run glc serve) on port 8111.
 """
 
@@ -20,7 +21,6 @@ from dotenv import load_dotenv
 
 from glc.channels.catalogue.telegram.adapter import Adapter
 from glc.channels.envelope import ChannelReply
-from glc.config import get_or_create_install_token
 from glc.security.pairing import get_pairing_store
 
 load_dotenv()
@@ -47,13 +47,16 @@ async def main() -> None:
 
     # 2. Get Gateway connection details
     gateway_port = int(os.getenv("GLC_PORT", "8111"))
-    install_token = get_or_create_install_token()
+    channel_credential = os.getenv("GLC_CHANNEL_CREDENTIAL", "")
+    if not channel_credential:
+        print("Error: GLC_CHANNEL_CREDENTIAL environment variable not set.")
+        sys.exit(1)
 
     # Instantiate the adapter
     adapter = Adapter()
 
     # WebSocket URL
-    ws_url = f"ws://localhost:{gateway_port}/v1/channels/telegram?token={install_token}"
+    ws_url = f"ws://localhost:{gateway_port}/v1/channels/telegram"
 
     print(f"Connecting to GLC Gateway WebSocket at: ws://localhost:{gateway_port}/v1/channels/telegram")
 
@@ -64,7 +67,10 @@ async def main() -> None:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "websockets"])
         import websockets
 
-    async with websockets.connect(ws_url) as ws:
+    async with websockets.connect(
+        ws_url,
+        additional_headers={"Authorization": f"Bearer {channel_credential}"},
+    ) as ws:
         print("Connected to GLC Gateway WebSocket!")
         offset = 0
 

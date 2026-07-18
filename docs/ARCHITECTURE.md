@@ -72,11 +72,16 @@ scraped from the inbox can carry instructions, but it arrives with
 
 ## 6. Every action is logged append-only
 
-`glc/audit/store.py` writes to `~/.glc/audit.sqlite`. Each row carries
-session id, channel, sender id, trust level, event type, tool, policy
-verdict, params, result. The S8 replay viewer reads from the same
-store. Each insert commits immediately so the trail survives a hard
-kill.
+Local deployments write through `glc/audit/store.py` to
+`~/.glc/audit.sqlite`. Modal gateway replicas instead proxy every operation to
+one `audit_writer` Function. That Function has one container and one concurrent
+input, owns a dedicated `glc-audit` Volume, reloads before access, and commits
+after each operation. Autoscaled gateway containers never mount the audit
+Volume or open its SQLite file.
+
+Each row carries session id, channel, sender id, trust level, event type, tool,
+policy verdict, params, result. The S8 replay viewer reads through the same
+store interface.
 
 Lives in: `glc/audit/`.
 Answers: the recovery scenario after a bad outcome — the operator

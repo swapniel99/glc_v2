@@ -44,8 +44,7 @@ _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
 
 def init_store() -> None:
-    with _conn() as c:
-        c.executescript(_SCHEMA_PATH.read_text())
+    get_store().init()
 
 
 def _jsonify(v: Any) -> str | None:
@@ -63,6 +62,10 @@ class AuditStore:
     """Application-layer write-once store. The class deliberately exposes
     no update or delete methods. Reads (for the replay viewer) live in
     query() which is read-only."""
+
+    def init(self) -> None:
+        with _conn() as c:
+            c.executescript(_SCHEMA_PATH.read_text())
 
     def append(
         self,
@@ -98,6 +101,33 @@ class AuditStore:
             )
             return int(cur.lastrowid or 0)
 
+    def query(
+        self,
+        limit: int = 100,
+        session_id: str | None = None,
+        channel: str | None = None,
+    ) -> list[dict]:
+        q = "SELECT * FROM audit_log"
+        where: list[str] = []
+        args: list[Any] = []
+        if session_id:
+            where.append("session_id=?")
+            args.append(session_id)
+        if channel:
+            where.append("channel=?")
+            args.append(channel)
+        if where:
+            q += " WHERE " + " AND ".join(where)
+        q += " ORDER BY ts DESC LIMIT ?"
+        args.append(limit)
+        with _conn() as c:
+            return [dict(r) for r in c.execute(q, args).fetchall()]
+
+    def schema_version(self) -> int:
+        with _conn() as c:
+            row = c.execute("SELECT MAX(version) AS v FROM audit_schema").fetchone()
+            return int(row["v"] or 0)
+
 
 _singleton: AuditStore | None = None
 
@@ -105,9 +135,16 @@ _singleton: AuditStore | None = None
 def get_store() -> AuditStore:
     global _singleton
     if _singleton is None:
-        init_store()
         _singleton = AuditStore()
+        _singleton.init()
     return _singleton
+
+
+def configure_store(audit_store: AuditStore) -> None:
+    """Replace the local store with a deployment-owned writer proxy."""
+
+    global _singleton
+    _singleton = audit_store
 
 
 def append(**kwargs: Any) -> int:
@@ -115,23 +152,8 @@ def append(**kwargs: Any) -> int:
 
 
 def query(limit: int = 100, session_id: str | None = None, channel: str | None = None) -> list[dict]:
-    q = "SELECT * FROM audit_log"
-    where, args = [], []
-    if session_id:
-        where.append("session_id=?")
-        args.append(session_id)
-    if channel:
-        where.append("channel=?")
-        args.append(channel)
-    if where:
-        q += " WHERE " + " AND ".join(where)
-    q += " ORDER BY ts DESC LIMIT ?"
-    args.append(limit)
-    with _conn() as c:
-        return [dict(r) for r in c.execute(q, args).fetchall()]
+    return get_store().query(limit=limit, session_id=session_id, channel=channel)
 
 
 def schema_version() -> int:
-    with _conn() as c:
-        row = c.execute("SELECT MAX(version) AS v FROM audit_schema").fetchone()
-        return int(row["v"] or 0)
+    return get_store().schema_version()

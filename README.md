@@ -41,6 +41,11 @@ become hyphens). Put only that adapter's platform credentials in it. Gateway
 Secrets such as `glc-llm-keys` and another adapter's Secret are rejected. A
 missing adapter Secret remains fail-closed rather than inheriting one.
 
+Audit writes use a separate `glc-audit` Volume mounted only by a single
+`audit_writer` Function. Autoscaled gateway replicas call that writer remotely;
+the writer reloads the Volume before SQLite access and commits after every
+operation.
+
 Create a separate gateway-only signing Secret before deployment. Generate at
 least 32 random bytes locally, then paste the value into this command:
 

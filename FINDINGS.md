@@ -146,3 +146,15 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
   - `UV_CACHE_DIR=/tmp/glc-v2-uv-cache uv lock --check --offline` resolved all 167 locked packages without changing the lockfile.
   - `ruff check modal_app.py`, `git diff --check`, syntax parsing, and importing `modal_app` passed locally.
   - Remote Modal image build and deployment verification remain pending.
+
+## F-009: Concurrent SQLite Audit Writers
+
+- Finding: An autoscaled Modal gateway could create multiple SQLite writers for one audit file, while Volume changes lacked explicit reload and commit operations. This could split or lose audit history.
+- Reference invariant(s): 7.
+- Attacker role: Compromised component or concurrent gateway traffic.
+- Status: Fixed locally; deployment re-check pending.
+- Evidence / fix:
+  - [`modal_app.py`](modal_app.py) gives audit storage a dedicated `glc-audit` Volume mounted only by `audit_writer`.
+  - `audit_writer` is capped at one container and one concurrent input. Autoscaled gateway replicas use a store-compatible remote proxy and never mount or open the audit SQLite file.
+  - Writer reloads its Volume before every operation, closes SQLite connections, then explicitly commits the Volume snapshot.
+  - [`tests/test_modal_audit_writer.py`](tests/test_modal_audit_writer.py) verifies reload/commit durability behavior, remote forwarding, and gateway/audit Volume separation.

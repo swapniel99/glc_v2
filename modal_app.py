@@ -67,9 +67,11 @@ adapter_image = (
     .add_local_dir(str(LOCAL_GLC), remote_path="/root/glc")
 )
 
-# A persistent Volume. The audit db, pairing db, and install token live here and
-# survive restarts and redeploys. Without this, every restart wipes them.
+# Persistent gateway state. Audit data has a separate Volume owned only by the
+# single audit writer below.
 data_volume = modal.Volume.from_name("glc-data", create_if_missing=True)
+audit_volume = modal.Volume.from_name("glc-audit", create_if_missing=True)
+_AUDIT_DB_PATH = "/audit/audit.sqlite"
 
 # The provider keys, injected as environment variables at runtime. Created
 # separately with `modal secret create glc-llm-keys ...` (mock values for now).
@@ -148,6 +150,75 @@ class ModalNonceStore:
 
     async def consume(self, nonce: str, expires_at: int) -> bool:
         return await capability_nonces.put.aio(nonce, expires_at, skip_if_exists=True)
+
+
+def _run_audit_operation(operation: str, payload: dict[str, Any]) -> Any:
+    """Run one audit operation after synchronizing the writer's Volume."""
+
+    from glc.audit.store import AuditStore
+
+    os.environ["GLC_AUDIT_DB"] = _AUDIT_DB_PATH
+    audit_volume.reload()
+    store = AuditStore()
+    store.init()
+    result: Any
+
+    if operation == "init":
+        result = None
+    elif operation == "append":
+        result = store.append(**payload)
+    elif operation == "query":
+        result = store.query(**payload)
+    elif operation == "schema_version":
+        result = store.schema_version()
+    else:
+        raise ValueError("unsupported audit operation")
+
+    # SQLite connections are closed before this snapshot. Every operation may
+    # initialize the schema, so commit even for a first read on a fresh Volume.
+    audit_volume.commit()
+    return result
+
+
+@app.function(
+    image=gateway_image,
+    volumes={"/audit": audit_volume},
+    min_containers=0,
+    max_containers=1,
+)
+@modal.concurrent(max_inputs=1)
+def audit_writer(operation: str, payload: dict[str, Any]) -> Any:
+    """Sole SQLite writer; Modal queues inputs instead of scaling writers."""
+
+    return _run_audit_operation(operation, payload)
+
+
+class ModalAuditStore:
+    """AuditStore-compatible proxy used by autoscaled gateway replicas."""
+
+    @staticmethod
+    def _call(operation: str, payload: dict[str, Any] | None = None) -> Any:
+        return audit_writer.remote(operation, payload or {})
+
+    def init(self) -> None:
+        self._call("init")
+
+    def append(self, **kwargs: Any) -> int:
+        return int(self._call("append", kwargs))
+
+    def query(
+        self,
+        limit: int = 100,
+        session_id: str | None = None,
+        channel: str | None = None,
+    ) -> list[dict]:
+        return self._call(
+            "query",
+            {"limit": limit, "session_id": session_id, "channel": channel},
+        )
+
+    def schema_version(self) -> int:
+        return int(self._call("schema_version"))
 
 
 @app.function(image=gateway_image, schedule=modal.Period(days=1))
@@ -248,6 +319,7 @@ def fastapi_app():
     # folder must exist on the mounted Volume before the app's lifespan runs.
     os.makedirs("/data/glc", exist_ok=True)
 
+    from glc.audit import configure_store
     from glc.main import app as web  # the real glc_v1 app, imported as-is
     from glc.security.scoped_credentials import (
         ScopedActionAuthorizer,
@@ -255,6 +327,7 @@ def fastapi_app():
         signing_key_from_environment,
     )
 
+    configure_store(ModalAuditStore())
     web.state.adapter_session_factory = ModalAdapterSessionFactory()
     web.state.scoped_action_authorizer = ScopedActionAuthorizer(
         ScopedCredentialAuthority(signing_key_from_environment(), ModalNonceStore())

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import logging
 from typing import Literal
 
@@ -10,6 +11,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from glc.security.auth import require_install_token
+from glc.security.endpoint_limits import (
+    MAX_TRANSCRIBE_AUDIO_B64_CHARS,
+    MAX_TRANSCRIBE_AUDIO_BYTES,
+    endpoint_rate_limit,
+)
 from glc.voice.stt import STTError, transcribe
 
 logger = logging.getLogger(__name__)
@@ -20,9 +26,9 @@ router = APIRouter(dependencies=[Depends(require_install_token)])
 
 
 class TranscribeRequest(BaseModel):
-    audio_b64: str
-    mime: str = "audio/wav"
-    agent: str | None = None
+    audio_b64: str = Field(max_length=MAX_TRANSCRIBE_AUDIO_B64_CHARS)
+    mime: str = Field(default="audio/wav", min_length=1, max_length=127)
+    agent: str | None = Field(default=None, max_length=128)
     prefer: Literal["default", "local", "streaming"] = "default"
 
 
@@ -34,12 +40,18 @@ class TranscribeResponse(BaseModel):
     cost_usd: float = Field(default=0.0)
 
 
-@router.post("/v1/transcribe", response_model=TranscribeResponse)
+@router.post(
+    "/v1/transcribe",
+    response_model=TranscribeResponse,
+    dependencies=[Depends(endpoint_rate_limit("transcribe"))],
+)
 async def transcribe_route(req: TranscribeRequest):
     try:
-        audio = base64.b64decode(req.audio_b64)
-    except Exception as e:
-        raise HTTPException(400, f"audio_b64 is not valid base64: {e}") from e
+        audio = base64.b64decode(req.audio_b64, validate=True)
+    except (ValueError, binascii.Error):
+        raise HTTPException(400, "audio_b64 is not valid base64") from None
+    if len(audio) > MAX_TRANSCRIBE_AUDIO_BYTES:
+        raise HTTPException(413, "audio exceeds size limit")
     try:
         r = await transcribe(audio, req.mime, prefer=req.prefer)
     except STTError as e:

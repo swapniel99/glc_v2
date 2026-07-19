@@ -132,6 +132,7 @@ llm_secret = modal.Secret.from_name("glc-llm-keys")
 # Credential signing material is policy-service-only and separate from provider keys.
 capability_secret = modal.Secret.from_name("glc-capability-signing-key")
 capability_nonces = modal.Dict.from_name("glc-capability-nonces", create_if_missing=True)
+endpoint_rate_windows = modal.Dict.from_name("glc-endpoint-rate-windows", create_if_missing=True)
 cost_signing_secret = modal.Secret.from_name("glc-cost-ledger-signing-key")
 image_url_config = modal.Secret.from_name("glc-image-url-config")
 
@@ -545,6 +546,55 @@ class ModalCostLedger:
         return await self._acall("aggregate", {"call_role": call_role})
 
 
+def _run_endpoint_rate_limit(endpoint: str) -> dict[str, int | bool]:
+    """Check one persistent sliding window inside serialized Modal Function."""
+    from glc.security.endpoint_limits import ENDPOINT_DAILY_QUOTAS, ENDPOINT_RATE_LIMITS
+
+    limit = ENDPOINT_RATE_LIMITS.get(endpoint)
+    daily_quota = ENDPOINT_DAILY_QUOTAS.get(endpoint)
+    if limit is None or daily_quota is None:
+        raise ValueError("unknown endpoint rate limit")
+
+    now = time.time()
+    minute_cutoff = now - 60
+    day_cutoff = now - 86_400
+    stored = endpoint_rate_windows.get(endpoint, [])
+    if not isinstance(stored, list):
+        stored = []
+    events = [
+        float(value)
+        for value in stored
+        if isinstance(value, (int, float)) and value > day_cutoff
+    ]
+    minute_events = [value for value in events if value > minute_cutoff]
+    waits = []
+    if len(minute_events) >= limit:
+        waits.append(minute_events[0] + 60 - now)
+    if len(events) >= daily_quota:
+        waits.append(events[0] + 86_400 - now)
+    if waits:
+        retry_after = max(1, int(max(waits) + 0.999))
+        endpoint_rate_windows.put(endpoint, events)
+        return {"allowed": False, "retry_after": retry_after}
+    events.append(now)
+    endpoint_rate_windows.put(endpoint, events)
+    return {"allowed": True, "retry_after": 0}
+
+
+@app.function(image=gateway_image, min_containers=0, max_containers=1)
+@modal.concurrent(max_inputs=1)
+def endpoint_rate_limit_writer(endpoint: str) -> dict[str, int | bool]:
+    return _run_endpoint_rate_limit(endpoint)
+
+
+class ModalEndpointRateLimiter:
+    """Cross-replica endpoint limiter proxy used by FastAPI dependencies."""
+
+    async def acheck(self, endpoint: str) -> tuple[bool, int]:
+        result = await endpoint_rate_limit_writer.remote.aio(endpoint)
+        return bool(result["allowed"]), int(result["retry_after"])
+
+
 @app.function(image=gateway_image, schedule=modal.Period(days=1))
 async def purge_expired_capability_nonces() -> None:
     """Bound replay-ledger growth without making live nonces reusable."""
@@ -652,6 +702,7 @@ def fastapi_app():
 
     configure_store(ModalAuditStore())
     db.configure_ledger(ModalCostLedger(db.signing_key_from_environment()))
+    web.state.endpoint_rate_limiter = ModalEndpointRateLimiter()
     web.state.adapter_session_factory = ModalAdapterSessionFactory()
     web.state.scoped_action_authorizer = ModalPolicyAuthorizer()
     return web

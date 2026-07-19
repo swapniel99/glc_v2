@@ -2,7 +2,13 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+MAX_CHAT_INPUT_TOKENS = 64_000
+MAX_CHAT_OUTPUT_TOKENS = 8_192
+MAX_BATCH_CALLS = 16
+MAX_BATCH_CONCURRENCY = 4
+MAX_BATCH_OUTPUT_TOKENS = 32_768
 
 
 class ToolDef(BaseModel):
@@ -46,8 +52,8 @@ class ChatRequest(BaseModel):
     system: str | list[CacheableSystemBlock] | None = None
     provider: str | None = None
     model: str | None = None
-    max_tokens: int = 2048
-    temperature: float = 0.7
+    max_tokens: int = Field(default=2048, ge=1, le=MAX_CHAT_OUTPUT_TOKENS)
+    temperature: float = Field(default=0.7, ge=0, le=2)
     stream: bool = False
 
     # New in V2:
@@ -129,8 +135,14 @@ class BatchChatRequest(BaseModel):
     """V8 batch endpoint. The gateway dispatches the inner calls with
     bounded parallelism so providers' rate limits are respected centrally."""
 
-    calls: list[ChatRequest]
-    max_concurrency: int = 4
+    calls: list[ChatRequest] = Field(min_length=1, max_length=MAX_BATCH_CALLS)
+    max_concurrency: int = Field(default=4, ge=1, le=MAX_BATCH_CONCURRENCY)
+
+    @model_validator(mode="after")
+    def output_budget_is_bounded(self) -> "BatchChatRequest":
+        if sum(call.max_tokens for call in self.calls) > MAX_BATCH_OUTPUT_TOKENS:
+            raise ValueError(f"batch output budget exceeds {MAX_BATCH_OUTPUT_TOKENS} tokens")
+        return self
 
 
 class VisionRequest(BaseModel):
@@ -143,15 +155,18 @@ class VisionRequest(BaseModel):
     The gateway pre-resolves http URLs the same way /v1/chat does.
     """
 
-    image: str = Field(description="data: URL or http(s) URL of the image")
-    prompt: str
-    system: str | None = None
+    image: str = Field(
+        max_length=7 * 1024 * 1024,
+        description="data: URL or http(s) URL of the image",
+    )
+    prompt: str = Field(min_length=1, max_length=256 * 1024)
+    system: str | None = Field(default=None, max_length=256 * 1024)
     schema_: dict[str, Any] | None = Field(default=None, alias="schema")
     schema_name: str = "out"
     model: str | None = None
     provider: str | None = None
-    max_tokens: int = 1024
-    temperature: float = 0.0
+    max_tokens: int = Field(default=1024, ge=1, le=MAX_CHAT_OUTPUT_TOKENS)
+    temperature: float = Field(default=0.0, ge=0, le=2)
     agent: str | None = None
     session: str | None = None
 

@@ -31,6 +31,10 @@ from glc.routes import control as control_route  # noqa: E402
 from glc.routes import speak as speak_route  # noqa: E402
 from glc.routes import transcribe as transcribe_route  # noqa: E402
 from glc.routing import Router, RouterPool  # noqa: E402
+from glc.security.endpoint_limits import (  # noqa: E402
+    RequestBodyLimitMiddleware,
+    get_endpoint_rate_limiter,
+)
 
 PORT = int(os.getenv("GLC_PORT", "8111"))
 
@@ -74,6 +78,8 @@ async def lifespan(app: FastAPI):
     app.state.embedders, app.state.embed_order = E.build_embedders()
     app.state.started_at = time.time()
     app.state.registered_channels = []
+    if getattr(app.state, "endpoint_rate_limiter", None) is None:
+        app.state.endpoint_rate_limiter = get_endpoint_rate_limiter()
     yield
 
 
@@ -86,6 +92,7 @@ app = FastAPI(
     redoc_url="/redoc" if is_dev else None,
     openapi_url="/openapi.json" if is_dev else None,
 )
+app.add_middleware(RequestBodyLimitMiddleware)
 
 app.include_router(chat_route.router)
 app.include_router(transcribe_route.router)

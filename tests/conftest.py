@@ -30,6 +30,9 @@ def _isolated_glc_state(monkeypatch, tmp_path):
     import glc.security.rate_limits as _r
 
     _r._limiter = None
+    import glc.security.endpoint_limits as _el
+
+    _el._endpoint_limiter = None
     import glc.policy.engine as _e
 
     _e._engine = None
@@ -46,6 +49,7 @@ def app_client():
 
     import glc.main as m
 
+    m.app.state.endpoint_rate_limiter = None
     with TestClient(m.app) as c:
         yield c
 

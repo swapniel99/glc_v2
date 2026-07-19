@@ -34,6 +34,27 @@ uv run glc serve        # gateway on http://localhost:8111
 
 To deploy on Modal, see `modal_app.py` and Session 12 Section 6. Use mock keys only, and never put real provider keys on Modal.
 
+### Gateway request budgets
+
+Costly endpoints have deployment-wide sliding-window limits. Modal replicas use
+the serialized `endpoint_rate_limit_writer` and persistent
+`glc-endpoint-rate-windows` Dict; local development uses the same contract with
+an in-process limiter. Rejections return `429` and `Retry-After`.
+
+| Endpoint | Requests/minute | Requests/day | Maximum JSON body |
+|---|---:|---:|---:|
+| `/v1/chat` | 60 | 1,000 | 8 MiB |
+| `/v1/chat/batch` | 10 | 100 | 8 MiB |
+| `/v1/vision` | 20 | 250 | 8 MiB |
+| `/v1/embed` | 120 | 5,000 | 32 KiB |
+| `/v1/speak` | 30 | 500 | 64 KiB |
+| `/v1/transcribe` | 20 | 250 | 36 MiB |
+
+Hard work budgets additionally cap chat input at 64,000 estimated tokens,
+output at 8,192 tokens, batches at 16 calls/four concurrent calls/32,768 total
+output tokens, remote images at 5 MiB, speech text at 20,000 characters, and
+decoded transcription audio at 25 MiB. Body caps apply to chunked requests too.
+
 ### Modal adapter isolation
 
 Webhook adapters run in request-scoped Modal Sandboxes. Each sandbox receives

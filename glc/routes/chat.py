@@ -29,6 +29,7 @@ from jsonschema import Draft202012Validator, ValidationError
 from glc import db
 from glc import providers as P
 from glc.llm_schemas import (
+    MAX_CHAT_INPUT_TOKENS,
     BatchChatRequest,
     ChatRequest,
     ChatResponse,
@@ -41,6 +42,11 @@ from glc.llm_schemas import (
 )
 from glc.routing import DEFAULT_ROUTER_ORDER, LIMITS, SHORTCUTS
 from glc.security.auth import require_install_token
+from glc.security.endpoint_limits import (
+    MAX_IMAGE_BYTES,
+    MAX_IMAGE_DATA_URL_CHARS,
+    endpoint_rate_limit,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -382,26 +388,40 @@ async def _resolve_image_urls(messages):
                 for _ in range(6):
                     address = await _validate_image_url(current_url)
                     parsed = urlsplit(current_url)
-                    r = await c.get(
+                    async with c.stream(
+                        "GET",
                         _pin_image_url(current_url, address),
                         headers={"Host": parsed.netloc},
                         extensions={"sni_hostname": parsed.hostname},
-                    )
-                    if not r.is_redirect:
-                        break
-                    location = r.headers.get("location")
-                    if not location:
-                        raise HTTPException(400, "image URL redirect has no location")
-                    current_url = urljoin(current_url, location)
+                    ) as r:
+                        if r.is_redirect:
+                            location = r.headers.get("location")
+                            if not location:
+                                raise HTTPException(400, "image URL redirect has no location")
+                            current_url = urljoin(current_url, location)
+                            continue
+                        r.raise_for_status()
+                        content_length = r.headers.get("content-length")
+                        if content_length:
+                            try:
+                                declared_size = int(content_length)
+                            except ValueError:
+                                declared_size = 0
+                            if declared_size > MAX_IMAGE_BYTES:
+                                raise HTTPException(413, "image exceeds size limit")
+                        data = bytearray()
+                        async for chunk in r.aiter_bytes():
+                            if len(data) + len(chunk) > MAX_IMAGE_BYTES:
+                                raise HTTPException(413, "image exceeds size limit")
+                            data.extend(chunk)
+                        mt = (r.headers.get("content-type") or "image/png").split(";")[0].strip()
+                        b64 = base64.b64encode(data).decode()
+                        return f"data:{mt};base64,{b64}"
                 else:
                     raise HTTPException(400, "image URL exceeded redirect limit")
-                r.raise_for_status()
             except _httpx.HTTPError as e:
                 logger.error("Image fetch failed url=%s upstream_error=%s", url, e)
                 raise HTTPException(502, _CLIENT_IMAGE_FETCH_ERROR) from None
-            mt = (r.headers.get("content-type") or "image/png").split(";")[0].strip()
-            b64 = base64.b64encode(r.content).decode()
-            return f"data:{mt};base64,{b64}"
 
     out = []
     for m in messages:
@@ -415,6 +435,8 @@ async def _resolve_image_urls(messages):
             if isinstance(b, dict) and b.get("type") == "image_url":
                 iu = b.get("image_url")
                 url = iu.get("url") if isinstance(iu, dict) else iu
+                if isinstance(url, str) and url.startswith("data:") and len(url) > MAX_IMAGE_DATA_URL_CHARS:
+                    raise HTTPException(413, "image exceeds size limit")
                 if isinstance(url, str) and url.startswith(("http://", "https://")):
                     data_url = await _fetch_to_data_url(url)
                     new_blocks.append({"type": "image_url", "image_url": {"url": data_url}})
@@ -442,15 +464,18 @@ def _validate_structured(text: str, schema: dict):
 # ─────────────────────────── routes ───────────────────────────
 
 
-@router.post("/v1/chat")
+@router.post("/v1/chat", dependencies=[Depends(endpoint_rate_limit("chat"))])
 async def chat(req: ChatRequest, request: Request):
     state = request.app.state
     rtr = state.router
     router_pool = state.router_pool
     messages = _normalize_messages(req)
+    system_blocks = _system_blocks(req)
+    input_tokens = _est_tokens(messages, system_blocks, 0)
+    if input_tokens > MAX_CHAT_INPUT_TOKENS:
+        raise HTTPException(413, f"chat input exceeds {MAX_CHAT_INPUT_TOKENS} estimated tokens")
     if any(P._content_has_image(m.get("content")) for m in messages):
         messages = await _resolve_image_urls(messages)
-    system_blocks = _system_blocks(req)
     prompt_text = "".join(
         (
             P._extract_text_blocks(m.get("content", ""))
@@ -766,7 +791,7 @@ async def chat(req: ChatRequest, request: Request):
     raise HTTPException(503, _CLIENT_UPSTREAM_ERROR)
 
 
-@router.post("/v1/chat/batch")
+@router.post("/v1/chat/batch", dependencies=[Depends(endpoint_rate_limit("chat_batch"))])
 async def chat_batch(req: BatchChatRequest, request: Request):
     sem = _asyncio.Semaphore(max(1, req.max_concurrency))
 
@@ -784,7 +809,7 @@ async def chat_batch(req: BatchChatRequest, request: Request):
     return {"results": results}
 
 
-@router.post("/v1/vision")
+@router.post("/v1/vision", dependencies=[Depends(endpoint_rate_limit("vision"))])
 async def vision(req: VisionRequest, request: Request):
     content: list[dict[str, Any]] = [{"type": "text", "text": req.prompt}]
     content.append({"type": "image_url", "image_url": {"url": req.image}})
@@ -806,7 +831,7 @@ async def vision(req: VisionRequest, request: Request):
     return await chat(inner, request)
 
 
-@router.post("/v1/embed")
+@router.post("/v1/embed", dependencies=[Depends(endpoint_rate_limit("embed"))])
 async def embed(req: EmbedRequest, request: Request):
     from glc import embedders as E
 

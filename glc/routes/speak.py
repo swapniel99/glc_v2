@@ -6,9 +6,10 @@ import logging
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from glc.security.auth import require_install_token
+from glc.security.endpoint_limits import MAX_SPEAK_TEXT_CHARS, endpoint_rate_limit
 from glc.voice.tts import TTSError, synthesize
 
 logger = logging.getLogger(__name__)
@@ -19,9 +20,9 @@ router = APIRouter(dependencies=[Depends(require_install_token)])
 
 
 class SpeakRequest(BaseModel):
-    text: str
-    voice_id: str | None = None
-    agent: str | None = None
+    text: str = Field(min_length=1, max_length=MAX_SPEAK_TEXT_CHARS)
+    voice_id: str | None = Field(default=None, max_length=128)
+    agent: str | None = Field(default=None, max_length=128)
     prefer: Literal["default", "quality", "streaming", "realtime", "fallback"] = "default"
 
 
@@ -33,7 +34,11 @@ class SpeakResponse(BaseModel):
     cost_usd: float = 0.0
 
 
-@router.post("/v1/speak", response_model=SpeakResponse)
+@router.post(
+    "/v1/speak",
+    response_model=SpeakResponse,
+    dependencies=[Depends(endpoint_rate_limit("speak"))],
+)
 async def speak_route(req: SpeakRequest):
     try:
         r = await synthesize(req.text, voice_id=req.voice_id, prefer=req.prefer)

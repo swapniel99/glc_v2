@@ -202,6 +202,24 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
   - Focused Ruff, mypy, and `git diff --check` passed.
   - Deployment verification (2026-07-19): Modal runtime probe rejected attacker-controlled Twilio `MediaUrl`; final app deployment succeeded with Sandbox egress still restricted to `api.twilio.com`. Gateway `/healthz` returned 200; `/v1/status` returned 401 without credentials; `/openapi.json` returned 404.
 
+## F-012: Unbounded Costly Endpoint Work
+
+- Source: [`ISSUES_TO_FIX.md`](ISSUES_TO_FIX.md), inherited C5; not a new Part 2 finding.
+- Finding: Model, embedding, speech, and transcription routes had no gateway request-rate boundary. Several request models also accepted unbounded output tokens, batch size/concurrency, text, audio, or image bytes, allowing excessive provider spend and gateway memory/CPU consumption.
+- Reference invariant(s): 8.
+- Attacker role: Outsider before F-003; after F-003, access requires a valid installation token.
+- Status: Fixed locally; deployment re-check pending.
+- Evidence / fix:
+  - [`glc/security/endpoint_limits.py`](glc/security/endpoint_limits.py) applies separate per-minute and 24-hour sliding-window quotas to chat, batch, vision, embed, speak, and transcribe. It returns `429` with `Retry-After`; authentication runs before consuming the request budget.
+  - [`modal_app.py`](modal_app.py) sends all autoscaled gateway replicas through one serialized `endpoint_rate_limit_writer`. Sliding-window timestamps persist in the named `glc-endpoint-rate-windows` Modal Dict. Local execution uses a thread-safe implementation of the same interface.
+  - Pure ASGI request-body middleware caps both `Content-Length` and chunked bodies before FastAPI parses them.
+  - Pydantic and route checks cap chat input/output tokens, batch calls/concurrency/aggregate output, vision payloads, TTS text, and decoded STT audio. Remote images stream through an incremental 5 MiB cap instead of buffering an unbounded response.
+- Verification record:
+  - [`tests/test_endpoint_limits.py`](tests/test_endpoint_limits.py) covers every costly endpoint, authentication ordering, `Retry-After`, local window expiry, hard token/batch/audio/image/body limits, chunked-body rejection, and persistent Modal window behavior.
+  - Focused C5 security suite: 16 passed.
+  - Full suite: 376 passed.
+  - Focused Ruff, focused mypy, and `git diff --check` passed.
+
 ## Inherited Leak Remediations
 
 ### Leak 4: Adapter Access To Installation/Control Token

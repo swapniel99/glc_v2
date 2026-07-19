@@ -144,8 +144,8 @@ def test_healthz(app_client):
 
 
 def test_docs_disabled_in_production(monkeypatch):
-    import sys
     import importlib
+
     from fastapi.testclient import TestClient
 
     # Set env to production

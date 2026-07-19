@@ -76,6 +76,19 @@ Audit writes use a separate `glc-audit` Volume mounted only by a single
 the writer reloads the Volume before SQLite access and commits after every
 operation.
 
+Create a cost-ledger signing Secret with at least 32 random bytes:
+
+```sh
+uv run modal secret create glc-cost-ledger-signing-key \
+  GLC_COST_LEDGER_SIGNING_KEY='<random-value>'
+```
+
+Gateway replicas validate provider usage, sign each cost record, and send it to
+one `cost_ledger_writer` Function. Only that Function mounts the dedicated
+`glc-cost` Volume. Signatures bind every metric plus timestamp and nonce;
+tampering, replay, negative/overflow counts, and arbitrary statuses fail closed.
+Adapter Sandboxes receive neither signing Secret nor cost Volume.
+
 Create a separate policy-service-only signing Secret before deployment.
 Generate at least 32 random bytes locally, then paste the value into this
 command:

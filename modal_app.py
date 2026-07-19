@@ -109,11 +109,13 @@ policy_image = (
     .add_local_dir(str(LOCAL_GLC), remote_path="/root/glc")
 )
 
-# Persistent gateway state. Audit data has a separate Volume owned only by the
-# single audit writer below.
+# Persistent gateway state. Audit and cost data have separate Volumes owned
+# only by their single writers below.
 data_volume = modal.Volume.from_name("glc-data", create_if_missing=True)
 audit_volume = modal.Volume.from_name("glc-audit", create_if_missing=True)
+cost_volume = modal.Volume.from_name("glc-cost", create_if_missing=True)
 _AUDIT_DB_PATH = "/audit/audit.sqlite"
+_COST_DB_PATH = "/cost/gateway.sqlite"
 
 # The provider keys, injected as environment variables at runtime. Created
 # separately with `modal secret create glc-llm-keys ...` (mock values for now).
@@ -122,6 +124,7 @@ llm_secret = modal.Secret.from_name("glc-llm-keys")
 # Credential signing material is policy-service-only and separate from provider keys.
 capability_secret = modal.Secret.from_name("glc-capability-signing-key")
 capability_nonces = modal.Dict.from_name("glc-capability-nonces", create_if_missing=True)
+cost_signing_secret = modal.Secret.from_name("glc-cost-ledger-signing-key")
 
 logger = logging.getLogger(__name__)
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -402,6 +405,100 @@ class ModalAuditStore:
         return int(self._call("schema_version"))
 
 
+def _run_cost_operation(operation: str, payload: dict[str, Any]) -> Any:
+    """Verify signed cost writes inside the sole database writer."""
+
+    from glc import db
+
+    if not isinstance(payload, dict):
+        raise ValueError("invalid cost operation")
+    os.environ["GLC_GATEWAY_DB"] = _COST_DB_PATH
+    cost_volume.reload()
+    db._sqlite_init()
+
+    if operation == "init" and not payload:
+        result = None
+    elif operation == "append" and set(payload) == {"record", "signature"}:
+        db.append_signed(
+            payload["record"],
+            payload["signature"],
+            db.signing_key_from_environment(),
+        )
+        result = None
+    elif operation == "by_agent" and set(payload) == {"session", "since"}:
+        result = db._sqlite_by_agent(session=payload["session"], since=payload["since"])
+    elif operation == "recent" and set(payload) == {"limit", "provider", "status"}:
+        result = db._sqlite_recent(
+            limit=payload["limit"],
+            provider=payload["provider"],
+            status=payload["status"],
+        )
+    elif operation == "aggregate" and set(payload) == {"call_role"}:
+        result = db._sqlite_aggregate(call_role=payload["call_role"])
+    else:
+        raise ValueError("invalid cost operation")
+
+    cost_volume.commit()
+    return result
+
+
+@app.function(
+    image=gateway_image,
+    volumes={"/cost": cost_volume},
+    secrets=[cost_signing_secret],
+    min_containers=0,
+    max_containers=1,
+)
+@modal.concurrent(max_inputs=1)
+def cost_ledger_writer(operation: str, payload: dict[str, Any]) -> Any:
+    """Sole cost database writer; rejects unsigned or malformed records."""
+
+    return _run_cost_operation(operation, payload)
+
+
+class ModalCostLedger:
+    """Gateway-side signer and proxy; adapters receive neither key nor Volume."""
+
+    def __init__(self, signing_key: bytes) -> None:
+        self._signing_key = signing_key
+
+    @staticmethod
+    def _call(operation: str, payload: dict[str, Any] | None = None) -> Any:
+        return cost_ledger_writer.remote(operation, payload or {})
+
+    def init(self) -> None:
+        self._call("init")
+
+    def log_call(self, **values: Any) -> None:
+        from glc import db
+
+        record = db.build_record(**values)
+        self._call(
+            "append",
+            {
+                "record": record,
+                "signature": db.sign_record(record, self._signing_key),
+            },
+        )
+
+    def by_agent(self, session: str | None = None, since: float | None = None) -> Any:
+        return self._call("by_agent", {"session": session, "since": since})
+
+    def recent(
+        self,
+        limit: int = 100,
+        provider: str | None = None,
+        status: str | None = None,
+    ) -> Any:
+        return self._call(
+            "recent",
+            {"limit": limit, "provider": provider, "status": status},
+        )
+
+    def aggregate(self, call_role: str | None = None) -> Any:
+        return self._call("aggregate", {"call_role": call_role})
+
+
 @app.function(image=gateway_image, schedule=modal.Period(days=1))
 async def purge_expired_capability_nonces() -> None:
     """Bound replay-ledger growth without making live nonces reusable."""
@@ -494,7 +591,7 @@ class ModalAdapterSessionFactory:
 @app.function(
     image=gateway_image,
     volumes={"/data": data_volume},
-    secrets=[llm_secret],
+    secrets=[llm_secret, cost_signing_secret],
     min_containers=0,  # scale to zero when idle -> protects the free tier
 )
 @modal.asgi_app()
@@ -503,10 +600,12 @@ def fastapi_app():
     # folder must exist on the mounted Volume before the app's lifespan runs.
     os.makedirs("/data/glc", exist_ok=True)
 
+    from glc import db
     from glc.audit import configure_store
     from glc.main import app as web  # the real glc_v1 app, imported as-is
 
     configure_store(ModalAuditStore())
+    db.configure_ledger(ModalCostLedger(db.signing_key_from_environment()))
     web.state.adapter_session_factory = ModalAdapterSessionFactory()
     web.state.scoped_action_authorizer = ModalPolicyAuthorizer()
     return web

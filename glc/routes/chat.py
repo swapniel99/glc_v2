@@ -150,6 +150,12 @@ async def _classify_tier(req, role, router_pool, prompt_text):
                 response_format=None,
                 cache_system=False,
             )
+            db.validate_usage_metrics(
+                input_tokens=result.get("input_tokens"),
+                output_tokens=result.get("output_tokens"),
+                cache_create_tokens=result.get("cache_creation_input_tokens", 0),
+                cache_read_tokens=result.get("cache_read_input_tokens", 0),
+            )
             latency = int((time.time() - t0) * 1000)
             last_latency = latency
             tokens = (result.get("input_tokens") or 0) + (result.get("output_tokens") or 0)
@@ -622,6 +628,12 @@ async def chat(req: ChatRequest, request: Request):
                         )
                         raise HTTPException(503, _CLIENT_UPSTREAM_ERROR) from None
 
+            db.validate_usage_metrics(
+                input_tokens=result.get("input_tokens"),
+                output_tokens=result.get("output_tokens"),
+                cache_create_tokens=result.get("cache_creation_input_tokens"),
+                cache_read_tokens=result.get("cache_read_input_tokens"),
+            )
             tokens = (result["input_tokens"] or 0) + (result["output_tokens"] or 0)
             rtr.state[name].tokens_today += tokens
             rtr.state[name].tokens_minute.append((time.time(), tokens))

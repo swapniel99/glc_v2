@@ -243,7 +243,12 @@ async def test_modal_nonce_store_uses_atomic_put_if_absent(monkeypatch):
 def test_adapter_secret_mapping_rejects_gateway_or_cross_adapter_secret(monkeypatch):
     import modal_app
 
-    for secret_name in ("glc-llm-keys", "glc-capability-signing-key", "glc-adapter-slack"):
+    for secret_name in (
+        "glc-llm-keys",
+        "glc-capability-signing-key",
+        "glc-cost-ledger-signing-key",
+        "glc-adapter-slack",
+    ):
         monkeypatch.setenv(
             "GLC_MODAL_ADAPTER_SECRETS_JSON",
             json.dumps({"telegram": secret_name}),

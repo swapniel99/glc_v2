@@ -241,3 +241,22 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
   - [`tests/test_channel_credentials.py`](tests/test_channel_credentials.py) verifies rejection and audit persistence for missing, installation-token, query-token, and wrong-channel authentication, plus cross-channel envelope rejection and audit persistence.
   - Focused channel-credential and audit suite: 16 passed.
   - Full suite with an explicit writable test ledger (`GLC_GATEWAY_DB=/private/tmp/glc-v2-full-suite-leak9.sqlite`): 323 passed.
+
+### Leak 10: Cost Ledger Poisoning
+
+- Source: [`ISSUES_TO_FIX.md`](ISSUES_TO_FIX.md), inherited Leak 10; not a new Part 2 finding.
+- Finding: `log_call()` accepted arbitrary token counts and statuses, and Modal gateway replicas wrote cost SQLite state without an authenticated writer boundary. Malformed provider usage could also alter in-memory budget counters before persistence.
+- Reference invariant(s): 7, 8.
+- Attacker role: Compromised adapter.
+- Status: Fixed locally; deployment re-check pending.
+- Evidence / fix:
+  - [`glc/db.py`](glc/db.py) validates strict record fields and types, rejects negative or excessive metrics and unknown statuses, and HMAC-signs every record over all fields plus a timestamp and random nonce.
+  - Signed appends verify with constant-time comparison. A unique writer nonce prevents replay; writer signatures and nonces are not returned by `/v1/calls`.
+  - [`glc/routes/chat.py`](glc/routes/chat.py) validates provider-returned usage before changing router budget counters or requesting a ledger write.
+  - [`modal_app.py`](modal_app.py) mounts the dedicated `glc-cost` Volume only on a serialized `cost_ledger_writer` Function. Gateway replicas hold the signing Secret and use a remote proxy; adapter Sandboxes receive neither Secret nor Volume.
+  - Local development uses the same validation, signing, verification, and replay-protected append path in-process.
+- Verification record:
+  - [`tests/test_cost_ledger.py`](tests/test_cost_ledger.py) covers negative, overflow, boolean and string token counts, arbitrary status, signature tampering, replay, proof redaction, poisoned provider results, Modal Secret/Volume separation, writer verification, and gateway proxy signing.
+  - Focused cost and gateway compatibility suite: 42 passed.
+  - Full suite with an explicit writable test ledger (`GLC_GATEWAY_DB=/private/tmp/glc-v2-full-suite-leak10-final.sqlite`): 335 passed.
+  - Deployment re-check remains pending.

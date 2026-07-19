@@ -43,7 +43,7 @@ def test_policy_service_alone_holds_capability_secret_and_no_volume():
 
     assert policy_secret_names == ["glc-capability-signing-key"]
     assert modal_app.policy_credential_service.spec.volumes == {}
-    assert gateway_secret_names == ["glc-llm-keys"]
+    assert gateway_secret_names == ["glc-llm-keys", "glc-cost-ledger-signing-key"]
     assert "glc-capability-signing-key" not in gateway_secret_names
 
 

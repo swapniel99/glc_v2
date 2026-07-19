@@ -115,13 +115,20 @@ level, tool, tool-call ID, final argument hash, audience, and expiry. Redemption
 checks every claim and atomically consumes its nonce through a Modal Dict,
 preventing replay across containers.
 
+Cost records cross a second authenticated boundary. Gateway replicas validate
+provider usage and HMAC-sign complete records with a cost-ledger key unavailable
+to adapters. One serialized `cost_ledger_writer` Function verifies signatures,
+rejects malformed or replayed records, and alone mounts the `glc-cost` Volume.
+Gateway replicas can therefore request writes but cannot open or mutate the
+ledger database directly.
+
 Current model tool calls are proposals, not executed actions. No endpoint lets
 an adapter mint credentials or submit self-claimed identity. Future action
 handlers must redeem through `app.state.scoped_action_authorizer` immediately
 before dispatch.
 
-Lives in: `modal_app.py`, `glc/channels/execution.py`,
+Lives in: `modal_app.py`, `glc/db.py`, `glc/channels/execution.py`,
 `glc/security/scoped_credentials.py`.
 Answers: shared provider-secret theft, cross-user/tenant confused deputy,
 policy monkey-patching, changed-argument TOCTOU, cross-tool use, and credential
-replay.
+replay, and cost-ledger poisoning.

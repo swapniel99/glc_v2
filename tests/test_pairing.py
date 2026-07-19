@@ -4,7 +4,15 @@ from __future__ import annotations
 
 import time
 
-from glc.security.pairing import CODE_TTL_SECONDS, PairingStore
+import pytest
+
+from glc.security.pairing import (
+    CODE_TTL_SECONDS,
+    PAIRING_ATTEMPT_LIMIT,
+    PAIRING_LOCKOUT_SECONDS,
+    PairingLockedOut,
+    PairingStore,
+)
 
 
 def test_issue_code_is_six_digits():
@@ -35,6 +43,37 @@ def test_expired_code_is_rejected(monkeypatch):
 def test_unknown_code_returns_none():
     store = PairingStore()
     assert store.confirm_code("000000") is None
+
+
+def test_failed_attempts_lock_only_that_client():
+    store = PairingStore()
+    code, _ = store.issue_code("telegram", "42")
+
+    for _ in range(PAIRING_ATTEMPT_LIMIT):
+        assert store.confirm_code("000000", attempt_key="client-a") is None
+
+    with pytest.raises(PairingLockedOut) as exc_info:
+        store.confirm_code(code, attempt_key="client-a")
+    assert exc_info.value.retry_after == PAIRING_LOCKOUT_SECONDS
+    assert store.confirm_code(code, attempt_key="client-b") is not None
+
+
+def test_pairing_attempts_persist_across_store_instances():
+    for _ in range(PAIRING_ATTEMPT_LIMIT):
+        assert PairingStore().confirm_code("000000", attempt_key="client-a") is None
+
+    with pytest.raises(PairingLockedOut):
+        PairingStore().confirm_code("000000", attempt_key="client-a")
+
+
+def test_pairing_lockout_expires(monkeypatch):
+    store = PairingStore()
+    real_time = time.time
+    for _ in range(PAIRING_ATTEMPT_LIMIT):
+        assert store.confirm_code("000000", attempt_key="client-a") is None
+
+    monkeypatch.setattr(time, "time", lambda: real_time() + PAIRING_LOCKOUT_SECONDS + 1)
+    assert store.confirm_code("000000", attempt_key="client-a") is None
 
 
 def test_owner_paired_classification():

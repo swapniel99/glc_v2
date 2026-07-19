@@ -220,6 +220,34 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
   - Full suite: 376 passed.
   - Focused Ruff, focused mypy, and `git diff --check` passed.
 
+## F-013: Pairing-Code Confirmation Brute Force
+
+- Source: [`ISSUES_TO_FIX.md`](ISSUES_TO_FIX.md), C6; not a new Part 2 finding.
+- Finding: `/v1/control/pair/confirm` required the installation token and pairing
+  codes expired after five minutes, but authenticated callers could make unlimited
+  guesses during that lifetime.
+- Reference invariant(s): 2, 4.
+- Attacker role: User or attacker holding the installation token.
+- Status: Fixed locally; deployment re-check pending.
+- Evidence / fix:
+  - [`glc/security/pairing.py`](glc/security/pairing.py) persistently tracks failed
+    attempts by direct client address. Five failures within five minutes lock that
+    client for 15 minutes; successful confirmation clears its failure state.
+  - Existing five-minute code expiry remains enforced. Expired guesses count as
+    failures.
+  - [`glc/routes/control.py`](glc/routes/control.py) accepts only six-digit codes,
+    does not trust forwarded client-address headers, and returns generic `429` with
+    `Retry-After` while locked.
+- Verification record:
+  - [`tests/test_pairing.py`](tests/test_pairing.py) covers client-scoped lockout,
+    persistence across store instances, expiry, and another client's continued
+    access.
+  - [`tests/test_control_plane.py`](tests/test_control_plane.py) covers live route
+    lockout, `Retry-After`, and malformed-code rejection.
+  - Focused pairing/control suite: 21 passed.
+  - Full suite: 381 passed.
+  - Focused Ruff and mypy checks passed.
+
 ## Inherited Leak Remediations
 
 ### Leak 4: Adapter Access To Installation/Control Token

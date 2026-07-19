@@ -10,6 +10,7 @@ The pairing store is sqlite-backed so it survives restarts.
 
 from __future__ import annotations
 
+import math
 import os
 import secrets
 import sqlite3
@@ -21,6 +22,17 @@ from pathlib import Path
 
 DEFAULT_DIR = Path(os.path.expanduser("~/.glc"))
 CODE_TTL_SECONDS = 5 * 60
+PAIRING_ATTEMPT_LIMIT = 5
+PAIRING_ATTEMPT_WINDOW_SECONDS = 5 * 60
+PAIRING_LOCKOUT_SECONDS = 15 * 60
+
+
+class PairingLockedOut(Exception):
+    """Pairing confirmations from one client are temporarily locked."""
+
+    def __init__(self, retry_after: int) -> None:
+        super().__init__("pairing confirmation temporarily locked")
+        self.retry_after = retry_after
 
 
 def _resolve_path() -> str:
@@ -75,6 +87,14 @@ class PairingStore:
                     expires_at REAL NOT NULL
                 )"""
             )
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS pairing_attempts (
+                    attempt_key TEXT PRIMARY KEY,
+                    window_started_at REAL NOT NULL,
+                    failed_attempts INTEGER NOT NULL,
+                    locked_until REAL NOT NULL
+                )"""
+            )
 
     def issue_code(
         self,
@@ -95,18 +115,43 @@ class PairingStore:
             )
         return code, expires_at
 
-    def confirm_code(self, code: str) -> PairingRecord | None:
-        with _conn() as c:
-            row = c.execute(
-                "SELECT * FROM pending_codes WHERE code=?",
-                (code,),
+    def confirm_code(self, code: str, *, attempt_key: str = "local") -> PairingRecord | None:
+        with self._lock, _conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            now = time.time()
+            attempt = c.execute(
+                "SELECT * FROM pairing_attempts WHERE attempt_key=?", (attempt_key,)
             ).fetchone()
-            if row is None:
-                return None
-            if row["expires_at"] < time.time():
+            if attempt is not None and float(attempt["locked_until"]) > now:
+                c.execute("ROLLBACK")
+                raise PairingLockedOut(max(1, math.ceil(float(attempt["locked_until"]) - now)))
+            if attempt is not None and (
+                float(attempt["locked_until"]) > 0
+                or float(attempt["window_started_at"]) + PAIRING_ATTEMPT_WINDOW_SECONDS <= now
+            ):
+                c.execute("DELETE FROM pairing_attempts WHERE attempt_key=?", (attempt_key,))
+                attempt = None
+
+            row = c.execute("SELECT * FROM pending_codes WHERE code=?", (code,)).fetchone()
+            if row is not None and float(row["expires_at"]) <= now:
                 c.execute("DELETE FROM pending_codes WHERE code=?", (code,))
+                row = None
+            if row is None:
+                failed_attempts = int(attempt["failed_attempts"]) + 1 if attempt is not None else 1
+                window_started_at = float(attempt["window_started_at"]) if attempt is not None else now
+                locked_until = (
+                    now + PAIRING_LOCKOUT_SECONDS if failed_attempts >= PAIRING_ATTEMPT_LIMIT else 0.0
+                )
+                c.execute(
+                    """INSERT OR REPLACE INTO pairing_attempts
+                       (attempt_key, window_started_at, failed_attempts, locked_until)
+                       VALUES (?, ?, ?, ?)""",
+                    (attempt_key, window_started_at, failed_attempts, locked_until),
+                )
+                c.execute("COMMIT")
                 return None
-            paired_at = time.time()
+
+            paired_at = now
             c.execute(
                 """INSERT OR REPLACE INTO pairings
                    (channel, channel_user_id, user_handle, trust_level, paired_at)
@@ -120,6 +165,8 @@ class PairingStore:
                 ),
             )
             c.execute("DELETE FROM pending_codes WHERE code=?", (code,))
+            c.execute("DELETE FROM pairing_attempts WHERE attempt_key=?", (attempt_key,))
+            c.execute("COMMIT")
             return PairingRecord(
                 channel=row["channel"],
                 channel_user_id=row["channel_user_id"],

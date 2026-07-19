@@ -21,7 +21,7 @@ from glc.security.channel_credentials import (
     InvalidChannelCredential,
     issue_channel_credential,
 )
-from glc.security.pairing import CODE_TTL_SECONDS, get_pairing_store
+from glc.security.pairing import CODE_TTL_SECONDS, PairingLockedOut, get_pairing_store
 
 router = APIRouter()
 
@@ -40,7 +40,7 @@ class PairResponse(BaseModel):
 
 
 class PairConfirmRequest(BaseModel):
-    code: str
+    code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
 
 
 class ChannelCredentialRequest(BaseModel):
@@ -95,9 +95,21 @@ async def pair(req: PairRequest, authorization: str | None = Header(default=None
 
 
 @router.post("/v1/control/pair/confirm")
-async def pair_confirm(req: PairConfirmRequest, authorization: str | None = Header(default=None)):
+async def pair_confirm(
+    req: PairConfirmRequest,
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
     require_install_token(authorization)
-    rec = get_pairing_store().confirm_code(req.code)
+    attempt_key = request.client.host if request.client is not None else "unknown"
+    try:
+        rec = get_pairing_store().confirm_code(req.code, attempt_key=attempt_key)
+    except PairingLockedOut as exc:
+        raise HTTPException(
+            429,
+            "pairing confirmation temporarily locked",
+            headers={"Retry-After": str(exc.retry_after)},
+        ) from exc
     if rec is None:
         raise HTTPException(404, "code unknown or expired")
     return {

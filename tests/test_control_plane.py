@@ -36,6 +36,27 @@ def test_pair_confirm_bad_code_is_404(app_client, install_token):
     assert r.status_code == 404
 
 
+def test_pair_confirm_locks_after_repeated_failures(app_client, install_token):
+    headers = {"Authorization": f"Bearer {install_token}"}
+    for _ in range(5):
+        response = app_client.post("/v1/control/pair/confirm", json={"code": "000000"}, headers=headers)
+        assert response.status_code == 404
+
+    response = app_client.post("/v1/control/pair/confirm", json={"code": "000000"}, headers=headers)
+    assert response.status_code == 429
+    assert response.json() == {"detail": "pairing confirmation temporarily locked"}
+    assert int(response.headers["Retry-After"]) > 0
+
+
+def test_pair_confirm_rejects_non_six_digit_code(app_client, install_token):
+    response = app_client.post(
+        "/v1/control/pair/confirm",
+        json={"code": "not-a-code"},
+        headers={"Authorization": f"Bearer {install_token}"},
+    )
+    assert response.status_code == 422
+
+
 def test_presence_returns_uptime_and_pairings(app_client, install_token):
     h = {"Authorization": f"Bearer {install_token}"}
     p = app_client.post(

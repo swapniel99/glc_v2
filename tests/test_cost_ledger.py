@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -199,3 +200,23 @@ def test_modal_proxy_signs_validated_record(monkeypatch):
     with pytest.raises(db.InvalidCostRecord, match="output_tokens"):
         ledger.log_call(provider="test", model="test-model", output_tokens=-1)
     assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_modal_proxy_uses_async_remote_writer(monkeypatch):
+    import modal_app
+
+    key = b"p" * 32
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def remote(operation: str, payload: dict[str, Any]) -> None:
+        calls.append((operation, payload))
+
+    monkeypatch.setattr(modal_app.cost_ledger_writer, "remote", SimpleNamespace(aio=remote))
+    db.configure_ledger(modal_app.ModalCostLedger(key))
+
+    await db.alog_call(provider="test", model="test-model", input_tokens=4)
+
+    operation, payload = calls[0]
+    assert operation == "append"
+    db.verify_record(payload["record"], payload["signature"], key)

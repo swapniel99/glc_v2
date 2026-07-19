@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
+
+import pytest
 
 
 class _FakeVolume:
@@ -76,3 +79,25 @@ def test_modal_proxy_forwards_to_remote_writer(monkeypatch):
             },
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_modal_proxy_uses_async_remote_writer(monkeypatch):
+    import modal_app
+
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def fake_remote(operation: str, payload: dict[str, Any]) -> int:
+        calls.append((operation, payload))
+        return 7
+
+    monkeypatch.setattr(modal_app.audit_writer, "remote", SimpleNamespace(aio=fake_remote))
+
+    store = modal_app.ModalAuditStore()
+    assert await store.aappend(
+        channel="x",
+        channel_user_id="1",
+        trust_level="owner_paired",
+        event_type="boot",
+    ) == 7
+    assert calls[0][0] == "append"

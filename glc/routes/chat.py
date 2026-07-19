@@ -165,7 +165,7 @@ async def _classify_tier(req, role, router_pool, prompt_text):
             if tier == "HUGE" and estimated <= 8000:
                 tier = "LARGE"
             if tier is None:
-                db.log_call(
+                await db.alog_call(
                     provider=name,
                     model=result.get("model", provider.model),
                     input_tokens=result.get("input_tokens", 0),
@@ -178,7 +178,7 @@ async def _classify_tier(req, role, router_pool, prompt_text):
                     router_decision="unparseable",
                 )
                 continue
-            db.log_call(
+            await db.alog_call(
                 provider=name,
                 model=result.get("model", provider.model),
                 input_tokens=result.get("input_tokens", 0),
@@ -202,7 +202,7 @@ async def _classify_tier(req, role, router_pool, prompt_text):
         except Exception as e:
             latency = int((time.time() - t0) * 1000)
             last_latency = latency
-            db.log_call(
+            await db.alog_call(
                 provider=name,
                 model=provider.model,
                 status="error",
@@ -523,7 +523,7 @@ async def chat(req: ChatRequest, request: Request):
                                 yield f"data: {json.dumps({'provider': name, 'delta': chunk})}\n\n"
                         text = "".join(agg)
                         latency = int((time.time() - t0) * 1000)
-                        db.log_call(
+                        await db.alog_call(
                             provider=name,
                             model=req.model or provider.model,
                             latency_ms=latency,
@@ -544,7 +544,7 @@ async def chat(req: ChatRequest, request: Request):
                             req.model or provider.model,
                             e,
                         )
-                        db.log_call(
+                        await db.alog_call(
                             provider=name,
                             model=req.model or provider.model,
                             status="error",
@@ -640,7 +640,7 @@ async def chat(req: ChatRequest, request: Request):
             if router_decision is not None:
                 router_decision.chosen_worker_provider = name
                 router_decision.chosen_worker_model = result["model"]
-            db.log_call(
+            await db.alog_call(
                 provider=name,
                 model=result["model"],
                 input_tokens=result["input_tokens"],
@@ -691,7 +691,7 @@ async def chat(req: ChatRequest, request: Request):
             secs, reason = _backoff_for(e, has_model_override=bool(req.model))
             if secs > 0:
                 rtr.state[name].mark_unavailable(secs, reason)
-            db.log_call(
+            await db.alog_call(
                 provider=name,
                 model=req.model or provider.model,
                 status="error",
@@ -725,7 +725,7 @@ async def chat(req: ChatRequest, request: Request):
             secs, reason = _backoff_for(e, has_model_override=bool(req.model))
             if secs > 0:
                 rtr.state[name].mark_unavailable(secs, reason)
-            db.log_call(
+            await db.alog_call(
                 provider=name,
                 model=req.model or provider.model,
                 status="error",
@@ -813,7 +813,7 @@ async def embed(req: EmbedRequest, request: Request):
     except E.EmbedderError as e:
         latency = int((time.time() - t0) * 1000)
         logger.error("Embedding request failed provider=%s upstream_error=%s", req.provider or "(any)", e)
-        db.log_call(
+        await db.alog_call(
             provider=req.provider or "(any)",
             model="(none)",
             status="error",
@@ -829,7 +829,7 @@ async def embed(req: EmbedRequest, request: Request):
             raise HTTPException(429, _CLIENT_EMBED_ERROR) from None
         raise HTTPException(502 if req.provider else 503, _CLIENT_EMBED_ERROR) from None
 
-    db.log_call(
+    await db.alog_call(
         provider=name,
         model=result["model"],
         status="ok",
@@ -868,7 +868,7 @@ async def list_embedders(request: Request):
         "max_input_chars": E.MAX_INPUT_CHARS,
         "backoff_steps_s": E.BACKOFF_STEPS,
         "live": live,
-        "today": db.aggregate(call_role="embed"),
+        "today": await db.aaggregate(call_role="embed"),
     }
 
 
@@ -879,7 +879,7 @@ async def cost_by_agent(
 ):
     from glc import pricing as _pricing
 
-    raw = db.by_agent(session=session)
+    raw = await db.aby_agent(session=session)
     if agent:
         raw = {agent: raw.get(agent, [])}
     out: dict[str, list[dict]] = {}
@@ -929,7 +929,7 @@ async def status(request: Request):
     return {
         "order": r.order,
         "live": r.all_status(),
-        "today": db.aggregate(call_role="worker"),
+        "today": await db.aaggregate(call_role="worker"),
         "limits": LIMITS,
     }
 
@@ -942,7 +942,7 @@ async def routers(request: Request):
         "providers": list(rp.providers.keys()),
         "models": {n: p.model for n, p in rp.providers.items()},
         "live": rp.all_status(),
-        "today": db.aggregate(call_role="router"),
+        "today": await db.aaggregate(call_role="router"),
         "limits": {k: LIMITS[k] for k in rp.providers},
         "tier_to_order": TIER_TO_ORDER,
     }
@@ -954,7 +954,7 @@ async def calls(
     provider: str | None = None,
     status: str | None = None,
 ):
-    records = db.recent(limit=limit, provider=provider, status=status)
+    records = await db.arecent(limit=limit, provider=provider, status=status)
     for record in records:
         if record["error"]:
             record["error"] = "Service failure"

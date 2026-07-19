@@ -7,6 +7,7 @@ database.  Local development uses the same signed append path in-process.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -436,6 +437,18 @@ def init() -> None:
     get_ledger().init()
 
 
+async def _async_ledger_call(method: str, *args: Any, **kwargs: Any) -> Any:
+    ledger = get_ledger()
+    async_method = getattr(ledger, f"a{method}", None)
+    if async_method is not None:
+        return await async_method(*args, **kwargs)
+    return await asyncio.to_thread(getattr(ledger, method), *args, **kwargs)
+
+
+async def ainit() -> None:
+    await _async_ledger_call("init")
+
+
 def log_call(
     provider,
     model,
@@ -486,13 +499,29 @@ def log_call(
     )
 
 
+async def alog_call(**values: Any) -> None:
+    await _async_ledger_call("log_call", **values)
+
+
 def by_agent(session=None, since=None):
     return get_ledger().by_agent(session=session, since=since)
+
+
+async def aby_agent(session=None, since=None):
+    return await _async_ledger_call("by_agent", session=session, since=since)
 
 
 def recent(limit=100, provider=None, status=None):
     return get_ledger().recent(limit=limit, provider=provider, status=status)
 
 
+async def arecent(limit=100, provider=None, status=None):
+    return await _async_ledger_call("recent", limit=limit, provider=provider, status=status)
+
+
 def aggregate(call_role=None):
     return get_ledger().aggregate(call_role=call_role)
+
+
+async def aaggregate(call_role=None):
+    return await _async_ledger_call("aggregate", call_role=call_role)

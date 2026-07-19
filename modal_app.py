@@ -386,11 +386,21 @@ class ModalAuditStore:
     def _call(operation: str, payload: dict[str, Any] | None = None) -> Any:
         return audit_writer.remote(operation, payload or {})
 
+    @staticmethod
+    async def _acall(operation: str, payload: dict[str, Any] | None = None) -> Any:
+        return await audit_writer.remote.aio(operation, payload or {})
+
     def init(self) -> None:
         self._call("init")
 
+    async def ainit(self) -> None:
+        await self._acall("init")
+
     def append(self, **kwargs: Any) -> int:
         return int(self._call("append", kwargs))
+
+    async def aappend(self, **kwargs: Any) -> int:
+        return int(await self._acall("append", kwargs))
 
     def query(
         self,
@@ -468,23 +478,36 @@ class ModalCostLedger:
     def _call(operation: str, payload: dict[str, Any] | None = None) -> Any:
         return cost_ledger_writer.remote(operation, payload or {})
 
+    @staticmethod
+    async def _acall(operation: str, payload: dict[str, Any] | None = None) -> Any:
+        return await cost_ledger_writer.remote.aio(operation, payload or {})
+
     def init(self) -> None:
         self._call("init")
 
-    def log_call(self, **values: Any) -> None:
+    async def ainit(self) -> None:
+        await self._acall("init")
+
+    def _signed_record(self, values: dict[str, Any]) -> dict[str, Any]:
         from glc import db
 
         record = db.build_record(**values)
-        self._call(
-            "append",
-            {
-                "record": record,
-                "signature": db.sign_record(record, self._signing_key),
-            },
-        )
+        return {
+            "record": record,
+            "signature": db.sign_record(record, self._signing_key),
+        }
+
+    def log_call(self, **values: Any) -> None:
+        self._call("append", self._signed_record(values))
+
+    async def alog_call(self, **values: Any) -> None:
+        await self._acall("append", self._signed_record(values))
 
     def by_agent(self, session: str | None = None, since: float | None = None) -> Any:
         return self._call("by_agent", {"session": session, "since": since})
+
+    async def aby_agent(self, session: str | None = None, since: float | None = None) -> Any:
+        return await self._acall("by_agent", {"session": session, "since": since})
 
     def recent(
         self,
@@ -497,8 +520,22 @@ class ModalCostLedger:
             {"limit": limit, "provider": provider, "status": status},
         )
 
+    async def arecent(
+        self,
+        limit: int = 100,
+        provider: str | None = None,
+        status: str | None = None,
+    ) -> Any:
+        return await self._acall(
+            "recent",
+            {"limit": limit, "provider": provider, "status": status},
+        )
+
     def aggregate(self, call_role: str | None = None) -> Any:
         return self._call("aggregate", {"call_role": call_role})
+
+    async def aaggregate(self, call_role: str | None = None) -> Any:
+        return await self._acall("aggregate", {"call_role": call_role})
 
 
 @app.function(image=gateway_image, schedule=modal.Period(days=1))

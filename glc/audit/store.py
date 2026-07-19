@@ -11,6 +11,7 @@ Each append commits immediately so writes survive a hard kill.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sqlite3
@@ -45,6 +46,10 @@ _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
 def init_store() -> None:
     get_store().init()
+
+
+async def ainit_store() -> None:
+    await _async_store_call("init")
 
 
 def _jsonify(v: Any) -> str | None:
@@ -147,8 +152,20 @@ def configure_store(audit_store: AuditStore) -> None:
     _singleton = audit_store
 
 
+async def _async_store_call(method: str, *args: Any, **kwargs: Any) -> Any:
+    store = get_store()
+    async_method = getattr(store, f"a{method}", None)
+    if async_method is not None:
+        return await async_method(*args, **kwargs)
+    return await asyncio.to_thread(getattr(store, method), *args, **kwargs)
+
+
 def append(**kwargs: Any) -> int:
     return get_store().append(**kwargs)
+
+
+async def aappend(**kwargs: Any) -> int:
+    return await _async_store_call("append", **kwargs)
 
 
 def query(limit: int = 100, session_id: str | None = None, channel: str | None = None) -> list[dict]:

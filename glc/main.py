@@ -21,7 +21,7 @@ load_dotenv(ROOT.parent / ".env")  # repo .env, if present
 from glc import db  # noqa: E402
 from glc import embedders as E  # noqa: E402
 from glc import providers as P  # noqa: E402
-from glc.audit import init_store as init_audit  # noqa: E402
+from glc.audit import ainit_store as init_audit  # noqa: E402
 from glc.cache import GeminiCache  # noqa: E402
 from glc.config import get_or_create_install_token  # noqa: E402
 from glc.policy import reload_engine  # noqa: E402
@@ -58,8 +58,8 @@ def _install_sighup_reload() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    db.init()
-    init_audit()
+    await db.ainit()
+    await init_audit()
     get_or_create_install_token()
     _install_sighup_reload()
     app.state.cache = GeminiCache(ttl_seconds=300)

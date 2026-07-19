@@ -23,7 +23,7 @@ import time
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from glc.audit import append as audit_append
+from glc.audit import aappend as audit_append
 from glc.channels.envelope import ChannelMessage, ChannelReply
 from glc.channels.execution import open_adapter_session
 from glc.security.allowlists import allowed
@@ -44,7 +44,7 @@ async def channel_ws(websocket: WebSocket, name: str):
     try:
         credential_claims = verify_channel_credential(presented, channel=name)
     except InvalidChannelCredential:
-        audit_append(
+        await audit_append(
             channel=name,
             channel_user_id="",
             trust_level="untrusted",
@@ -87,7 +87,7 @@ async def channel_ws(websocket: WebSocket, name: str):
                 continue
 
             if env.channel != name:
-                audit_append(
+                await audit_append(
                     channel=name,
                     channel_user_id=env.channel_user_id,
                     trust_level=env.trust_level,
@@ -105,7 +105,7 @@ async def channel_ws(websocket: WebSocket, name: str):
                 was_mentioned=bool(env.metadata.get("was_mentioned", False)),
             )
             if not ok:
-                audit_append(
+                await audit_append(
                     channel=env.channel,
                     channel_user_id=env.channel_user_id,
                     trust_level=env.trust_level,
@@ -117,7 +117,7 @@ async def channel_ws(websocket: WebSocket, name: str):
 
             ok, why = limiter.check_message(env.channel, env.channel_user_id)
             if not ok:
-                audit_append(
+                await audit_append(
                     channel=env.channel,
                     channel_user_id=env.channel_user_id,
                     trust_level=env.trust_level,
@@ -127,7 +127,7 @@ async def channel_ws(websocket: WebSocket, name: str):
                 await websocket.send_text(json.dumps({"status": 429, "error": why}))
                 continue
 
-            audit_append(
+            await audit_append(
                 channel=env.channel,
                 channel_user_id=env.channel_user_id,
                 trust_level=env.trust_level,
@@ -195,7 +195,7 @@ async def channel_webhook(name: str, request: Request):
             was_mentioned=bool(msg.metadata.get("was_mentioned", False)),
         )
         if not ok:
-            audit_append(
+            await audit_append(
                 channel=msg.channel,
                 channel_user_id=msg.channel_user_id,
                 trust_level=msg.trust_level,
@@ -206,7 +206,7 @@ async def channel_webhook(name: str, request: Request):
 
         ok, why = limiter.check_message(msg.channel, msg.channel_user_id)
         if not ok:
-            audit_append(
+            await audit_append(
                 channel=msg.channel,
                 channel_user_id=msg.channel_user_id,
                 trust_level=msg.trust_level,
@@ -215,7 +215,7 @@ async def channel_webhook(name: str, request: Request):
             )
             return JSONResponse(status_code=429, content={"error": why})
 
-        audit_append(
+        await audit_append(
             channel=msg.channel,
             channel_user_id=msg.channel_user_id,
             trust_level=msg.trust_level,

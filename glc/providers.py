@@ -199,6 +199,17 @@ class BaseProvider:
         self.model = model
         self.base_url = base_url
 
+    def _compress_messages(self, messages, model=None):
+        import os
+        if os.getenv("GLC_USE_HEADROOM", "false").lower() == "true":
+            try:
+                from headroom import compress
+                compression_model = os.getenv("GLC_HEADROOM_MODEL", model or self.model)
+                return compress(messages, model=compression_model)
+            except ImportError:
+                pass
+        return messages
+
     async def chat(
         self,
         messages,
@@ -396,6 +407,7 @@ class OpenAICompatProvider(BaseProvider):
         cache_system=False,
     ):
         m = model or self.model
+        messages = self._compress_messages(messages, model=m)
         system_text, _, _ = _flatten_system(system_blocks)
         body = {
             "model": m,
@@ -507,6 +519,7 @@ class OpenAICompatProvider(BaseProvider):
         cache_system=False,
     ):
         m = model or self.model
+        messages = self._compress_messages(messages, model=m)
         system_text, _, _ = _flatten_system(system_blocks)
         body = {
             "model": m,
@@ -700,6 +713,7 @@ class GeminiProvider(BaseProvider):
         cache_system=False,
     ):
         m = model or self.model
+        messages = self._compress_messages(messages, model=m)
         system_text, blocks, has_cache_marker = _flatten_system(system_blocks)
         cacheable_text = None
         if cache_system or has_cache_marker:
@@ -1019,6 +1033,7 @@ class OllamaProvider(BaseProvider):
         cache_system=False,
     ):
         m = model or self.model
+        messages = self._compress_messages(messages, model=m)
         system_text, _, _ = _flatten_system(system_blocks)
         native = _ollama_native_tools(m) and tools
         prompted_fallback = bool(tools) and not native

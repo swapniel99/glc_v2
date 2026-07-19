@@ -49,7 +49,7 @@ gateway_image = (
         uv_version=UV_VERSION,
         extra_options="--no-dev",
     )
-    .env({"GLC_CONFIG_DIR": "/data/glc", "PYTHONPATH": "/root"})
+    .env({"GLC_CONFIG_DIR": "/data/glc", "PYTHONPATH": "/root", "GLC_USE_HEADROOM": "true"})
     .add_local_dir(str(LOCAL_GLC), remote_path="/root/glc")
     .add_local_file(str(PYPROJECT), remote_path="/root/pyproject.toml")
     .add_local_file(str(UV_LOCK), remote_path="/root/uv.lock")

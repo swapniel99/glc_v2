@@ -26,6 +26,17 @@ Webhook adapters run in request-scoped Modal Sandboxes. Each sandbox receives
 an explicit outbound-domain allowlist, no gateway data Volume, and no provider
 secret. Adapters with an empty domain list have networking disabled.
 
+Core adapters use a lock-backed image containing only HTTP, schema, and YAML
+runtime dependencies. Heavy voice dependencies exist only in the `local_mic`
+image. Adapter code is copied into the image, made read-only, and the final
+image removes shells, package managers, and installers. Before importing an
+adapter, the worker drops to numeric UID/GID 65532 and disables standard Python
+subprocess, shell, fork, spawn, and exec APIs. Sandboxes retain only an
+ephemeral writable directory under `/tmp`, run with hard CPU/memory limits, and
+receive no OIDC identity token. Modal's default gVisor Sandbox supplies the
+kernel syscall boundary; the repository does not opt into the less-restricted
+VM runtime.
+
 Deployment-specific domains and per-adapter mock secrets can be supplied while
 deploying. Values are JSON maps keyed by adapter name; domains contain hostnames
 only, without schemes, paths, or ports.

@@ -34,13 +34,14 @@ class _FakeSandbox:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("name", "expected_network"),
+    ("name", "expected_network", "image_name"),
     [
-        ("telegram", {"outbound_domain_allowlist": ["api.telegram.org"]}),
-        ("webhook", {"block_network": True}),
+        ("telegram", {"outbound_domain_allowlist": ["api.telegram.org"]}, "adapter_image"),
+        ("webhook", {"block_network": True}, "adapter_image"),
+        ("local_mic", {"block_network": True}, "voice_adapter_image"),
     ],
 )
-async def test_modal_adapter_sandbox_network_is_fail_closed(monkeypatch, name, expected_network):
+async def test_modal_adapter_sandbox_network_is_fail_closed(monkeypatch, name, expected_network, image_name):
     import modal_app
 
     captured: dict[str, Any] = {}
@@ -61,8 +62,23 @@ async def test_modal_adapter_sandbox_network_is_fail_closed(monkeypatch, name, e
         assert captured["kwargs"][key] == value
     assert captured["kwargs"]["secrets"] == []
     assert "volumes" not in captured["kwargs"]
-    assert captured["kwargs"]["image"] is modal_app.adapter_image
+    assert captured["kwargs"]["image"] is getattr(modal_app, image_name)
+    assert captured["kwargs"]["env"] == modal_app._ADAPTER_IMAGE_ENV
+    assert captured["kwargs"]["workdir"] == "/tmp"
+    assert captured["kwargs"]["cpu"] == (0.25, 0.5)
+    assert captured["kwargs"]["memory"] == (256, 512)
+    assert captured["kwargs"]["include_oidc_identity_token"] is False
     assert sandbox.terminated
+
+
+def test_adapter_image_removes_shells_installers_and_code_writes():
+    import modal_app
+
+    hardening = modal_app._ADAPTER_IMAGE_HARDENING
+
+    assert "chmod -R a-w /opt/glc /.uv/.venv" in hardening
+    for path in ("/.uv/uv", "/.uv/.venv/bin/pip", "/usr/bin/apt", "/usr/bin/dpkg", "/bin/sh"):
+        assert path in hardening
 
 
 @pytest.mark.asyncio

@@ -11,8 +11,10 @@ import asyncio
 import base64
 import importlib
 import json
+import os
 import re
 import sys
+from pathlib import Path
 from typing import Any
 
 from glc.channels.base import ChannelAdapter
@@ -20,6 +22,39 @@ from glc.channels.envelope import ChannelReply
 
 _CHANNEL_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _MAX_LINE_BYTES = 1_000_000
+_RUNTIME_UID = 65_532
+_RUNTIME_GID = 65_532
+_RUNTIME_HOME = Path("/tmp/glc-adapter")
+
+
+def _drop_privileges() -> None:
+    if not hasattr(os, "geteuid") or os.geteuid() != 0:
+        return
+    os.setgroups([])
+    os.setgid(_RUNTIME_GID)
+    os.setuid(_RUNTIME_UID)
+    if os.geteuid() == 0:
+        raise RuntimeError("adapter worker refused to run as root")
+
+
+def _harden_runtime() -> None:
+    """Drop root and close standard process-spawning paths before imports."""
+
+    os.umask(0o077)
+    os.environ.update(
+        {
+            "GLC_CONFIG_DIR": str(_RUNTIME_HOME / "config"),
+            "HOME": str(_RUNTIME_HOME),
+            "TMPDIR": str(_RUNTIME_HOME / "tmp"),
+        }
+    )
+    _drop_privileges()
+    (_RUNTIME_HOME / "config").mkdir(parents=True, exist_ok=True, mode=0o700)
+    (_RUNTIME_HOME / "tmp").mkdir(parents=True, exist_ok=True, mode=0o700)
+
+    from glc.security.process_guard import install_process_guard
+
+    install_process_guard()
 
 
 def _load_adapter(name: str) -> ChannelAdapter:
@@ -83,6 +118,7 @@ async def _run(name: str) -> None:
 def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit("usage: python -m glc.channels.sandbox_runner <adapter>")
+    _harden_runtime()
     asyncio.run(_run(sys.argv[1]))
 
 

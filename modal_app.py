@@ -54,17 +54,45 @@ gateway_image = (
     .add_local_file(str(PYPROJECT), remote_path="/root/pyproject.toml")
 )
 
-# Sandboxes receive code and dependencies, but no gateway Volume or provider
-# Secret. Their filesystem and process namespace are separate from the gateway.
+# Sandboxes receive only adapter runtime dependencies and copied, read-only
+# code. Heavy voice dependencies exist only in the local-mic image.
+_ADAPTER_IMAGE_ENV = {
+    "GLC_CONFIG_DIR": "/tmp/glc-adapter/config",
+    "GLC_ENV": "production",
+    "HOME": "/tmp/glc-adapter",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONPATH": "/opt",
+    "TMPDIR": "/tmp/glc-adapter/tmp",
+}
+_ADAPTER_IMAGE_HARDENING = (
+    "RUN chmod -R a-w /opt/glc /.uv/.venv && "
+    "rm -rf /.uv/.venv/lib/python3.12/site-packages/pip "
+    "/.uv/.venv/lib/python3.12/site-packages/pip-* && "
+    "rm -f /.uv/uv /.uv/.venv/bin/pip /.uv/.venv/bin/pip3 "
+    "/usr/bin/apt /usr/bin/apt-get /usr/bin/dpkg "
+    "/bin/bash /bin/dash /bin/sh /usr/bin/bash /usr/bin/dash"
+)
 adapter_image = (
     base_image.uv_sync(
         uv_project_dir=str(PROJECT_ROOT),
         frozen=True,
         uv_version=UV_VERSION,
-        extra_options="--no-dev",
+        extra_options="--only-group adapter",
     )
-    .env({"GLC_CONFIG_DIR": "/tmp/glc", "GLC_ENV": "production"})
-    .add_local_dir(str(LOCAL_GLC), remote_path="/root/glc")
+    .env(_ADAPTER_IMAGE_ENV)
+    .add_local_dir(str(LOCAL_GLC), remote_path="/opt/glc", copy=True)
+    .dockerfile_commands(_ADAPTER_IMAGE_HARDENING)
+)
+voice_adapter_image = (
+    base_image.uv_sync(
+        uv_project_dir=str(PROJECT_ROOT),
+        frozen=True,
+        uv_version=UV_VERSION,
+        extra_options="--only-group adapter-voice",
+    )
+    .env(_ADAPTER_IMAGE_ENV)
+    .add_local_dir(str(LOCAL_GLC), remote_path="/opt/glc", copy=True)
+    .dockerfile_commands(_ADAPTER_IMAGE_HARDENING)
 )
 
 # Policy evaluation and capability signing run outside the gateway process.
@@ -157,6 +185,7 @@ def _load_adapter_secrets() -> dict[str, modal.Secret]:
 
 ADAPTER_EGRESS = _load_adapter_egress()
 ADAPTER_SECRETS = _load_adapter_secrets()
+ADAPTER_IMAGES = {"local_mic": voice_adapter_image}
 
 
 class ModalNonceStore:
@@ -408,12 +437,15 @@ class ModalAdapterSession:
             "glc.channels.sandbox_runner",
             name,
             app=app,
-            image=adapter_image,
+            image=ADAPTER_IMAGES.get(name, adapter_image),
+            env=_ADAPTER_IMAGE_ENV,
             secrets=secrets,
             timeout=60,
             idle_timeout=30,
-            cpu=0.5,
-            memory=512,
+            workdir="/tmp",
+            cpu=(0.25, 0.5),
+            memory=(256, 512),
+            include_oidc_identity_token=False,
             **network_options,
         )
         return cls(sandbox)

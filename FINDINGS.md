@@ -202,3 +202,26 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
   - Broader security suite: 46 passed.
   - Full suite with an explicit writable test ledger (`GLC_GATEWAY_DB=/private/tmp/glc-v2-full-suite-leak5.sqlite`): 318 passed.
   - Focused Ruff checks and `git diff --check` passed.
+
+### Leak 7: Unrestricted Adapter Subprocess And Shell Access
+
+- Source: [`ISSUES_TO_FIX.md`](ISSUES_TO_FIX.md), inherited Leak 7; not a new Part 2 finding.
+- Finding: Adapter Sandboxes used the full application dependency image, started the Python worker with root privileges, left code and system paths writable to that worker, and retained normal shell and subprocess entry points.
+- Reference invariant(s): 1, 8.
+- Attacker role: Compromised adapter.
+- Status: Fixed locally; deployment re-check pending.
+- Evidence / fix:
+  - [`pyproject.toml`](pyproject.toml) and [`uv.lock`](uv.lock) define lock-backed `adapter` and `adapter-voice` runtime groups. Core adapters receive only HTTP, Pydantic, and YAML dependencies; heavy voice packages are isolated to `local_mic`.
+  - [`modal_app.py`](modal_app.py) copies adapter code into the image, removes write bits, and removes shells, package installers, and OS package managers after image construction.
+  - [`glc/channels/sandbox_runner.py`](glc/channels/sandbox_runner.py) drops root groups and switches to numeric UID/GID 65532 before importing selected adapter code. Only private ephemeral config and temporary directories under `/tmp` remain writable.
+  - [`glc/security/process_guard.py`](glc/security/process_guard.py) blocks standard Python subprocess, shell, fork, spawn, exec, asyncio subprocess, and multiprocessing APIs before adapter import.
+  - Sandboxes use Modal's default gVisor syscall boundary, domain allowlists or complete network blocking, no gateway Volume, no OIDC identity, no exposed ports, and hard CPU, memory, idle, and lifetime caps.
+  - Modal 1.5.1 exposes no read-only-root, custom seccomp, Linux capability-drop, or runtime-user parameters. Non-root execution plus root-owned, non-writable image paths provides the enforceable equivalent for code and system files; `/tmp` stays writable for transient adapter state.
+- Verification record:
+  - [`tests/test_adapter_process_hardening.py`](tests/test_adapter_process_hardening.py) verifies standard process APIs fail closed, root privileges are dropped in group/GID/UID order, and hardening runs before adapter load.
+  - [`tests/test_adapter_sandbox.py`](tests/test_adapter_sandbox.py) verifies minimal versus voice image selection, shell/installer removal, non-writable code configuration, no inherited mounts/secrets, egress restrictions, and hard resource/identity settings.
+  - Clean `uv sync --only-group adapter --frozen` environment imported all 14 non-voice adapters successfully.
+  - Focused hardening suite: 11 passed.
+  - Broader channel and security suite: 193 passed.
+  - Full suite with an explicit writable test ledger (`GLC_GATEWAY_DB=/private/tmp/glc-v2-full-suite-leak7.sqlite`): 323 passed.
+  - Lockfile check, focused Ruff checks, syntax compilation, and `git diff --check` passed.

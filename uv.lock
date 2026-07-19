@@ -883,6 +883,19 @@ dependencies = [
 ]
 
 [package.dev-dependencies]
+adapter = [
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
+]
+adapter-voice = [
+    { name = "httpx" },
+    { name = "kokoro" },
+    { name = "numpy" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
+    { name = "websockets" },
+]
 dev = [
     { name = "ipython" },
     { name = "isort" },
@@ -911,6 +924,19 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
+adapter = [
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "pydantic", specifier = ">=2.6" },
+    { name = "pyyaml", specifier = ">=6.0" },
+]
+adapter-voice = [
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "kokoro", specifier = ">=0.9.4" },
+    { name = "numpy", specifier = ">=2.4.6" },
+    { name = "pydantic", specifier = ">=2.6" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "websockets", specifier = ">=12.0" },
+]
 dev = [
     { name = "ipython", specifier = ">=9.15.0" },
     { name = "isort", specifier = ">=8.0.1" },

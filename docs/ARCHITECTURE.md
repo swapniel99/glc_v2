@@ -95,6 +95,16 @@ production refuses the local in-process fallback. Each optional adapter Secret
 must use its adapter-specific name and each Sandbox has an explicit egress
 allowlist or no network.
 
+Core adapters use a minimal dependency group from `uv.lock`; only `local_mic`
+receives heavy voice dependencies. Code is copied into a root-owned image layer
+and made non-writable. Shells, package managers, and installers are removed.
+The worker drops to UID/GID 65532 before loading adapter code and installs a
+defense-in-depth guard over standard Python subprocess, shell, fork, spawn, and
+exec APIs. Hard CPU, memory, idle, and lifetime limits bound resource abuse.
+Only ephemeral `/tmp` state is writable. Modal's default gVisor runtime
+mediates system calls and isolates Sandbox workspace authority; no VM runtime,
+OIDC identity, ports, or persistent mounts are enabled.
+
 Provider credentials remain gateway-only. Policy evaluation, capability
 signing, and redemption run in a separate Modal Function with no provider
 Secret, gateway Volume, or writable policy mount. Only that policy Function

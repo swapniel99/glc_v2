@@ -8,7 +8,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import modal
 
@@ -365,6 +365,8 @@ def _run_audit_operation(operation: str, payload: dict[str, Any]) -> Any:
         result = store.query(**payload)
     elif operation == "schema_version":
         result = store.schema_version()
+    elif operation == "verify_chain":
+        result = store.verify_chain()
     else:
         raise ValueError("unsupported audit operation")
 
@@ -423,6 +425,12 @@ class ModalAuditStore:
 
     def schema_version(self) -> int:
         return int(self._call("schema_version"))
+
+    def verify_chain(self) -> bool:
+        return bool(self._call("verify_chain"))
+
+    async def averify_chain(self) -> bool:
+        return bool(await self._acall("verify_chain"))
 
 
 def _run_cost_operation(operation: str, payload: dict[str, Any]) -> Any:
@@ -631,7 +639,7 @@ class ModalAdapterSession:
             name,
             app=app,
             image=ADAPTER_IMAGES.get(name, adapter_image),
-            env=_ADAPTER_IMAGE_ENV,
+            env=cast(dict[str, str | None], _ADAPTER_IMAGE_ENV),
             secrets=secrets,
             timeout=60,
             idle_timeout=30,

@@ -38,7 +38,7 @@ def _drop_privileges() -> None:
 
 
 def _harden_runtime() -> None:
-    """Drop root and close standard process-spawning paths before imports."""
+    """Drop root and install kernel-enforced write/syscall restrictions."""
 
     os.umask(0o077)
     os.environ.update(
@@ -53,7 +53,9 @@ def _harden_runtime() -> None:
     (_RUNTIME_HOME / "tmp").mkdir(parents=True, exist_ok=True, mode=0o700)
 
     from glc.security.process_guard import install_process_guard
+    from glc.security.runtime_isolation import install_kernel_isolation
 
+    install_kernel_isolation(_RUNTIME_HOME)
     install_process_guard()
 
 

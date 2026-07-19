@@ -1,10 +1,9 @@
 """Append-only SQLite audit log.
 
 Every channel message, agent decision, policy verdict, and tool dispatch
-lands here. Append-only is enforced at the application layer: only
-`append()` is exposed; there is no update or delete function. The schema
-ships with `audit_schema` version 1; bumping it requires a documented
-migration step (see schema.sql).
+lands here. SQLite triggers reject updates and deletes. Every row includes
+the previous row hash and its own SHA-256 hash, making modification,
+deletion, or reordering detectable.
 
 Each append commits immediately so writes survive a hard kill.
 """
@@ -12,6 +11,7 @@ Each append commits immediately so writes survive a hard kill.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import sqlite3
@@ -42,6 +42,93 @@ def _conn():
 
 
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
+_GENESIS_HASH = "0" * 64
+_HASH_FIELDS = (
+    "ts",
+    "session_id",
+    "channel",
+    "channel_user_id",
+    "trust_level",
+    "event_type",
+    "tool",
+    "policy_verdict",
+    "params_json",
+    "result_json",
+)
+
+
+def _entry_hash(previous_hash: str, values: dict[str, Any]) -> str:
+    payload = {"prev_hash": previous_hash, **{field: values[field] for field in _HASH_FIELDS}}
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _install_immutable_triggers(c: sqlite3.Connection) -> None:
+    c.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS audit_log_no_update
+        BEFORE UPDATE ON audit_log
+        BEGIN
+            SELECT RAISE(ABORT, 'audit log is append-only');
+        END
+        """
+    )
+    c.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS audit_log_no_delete
+        BEFORE DELETE ON audit_log
+        BEGIN
+            SELECT RAISE(ABORT, 'audit log is append-only');
+        END
+        """
+    )
+
+
+def _migrate_hash_chain(c: sqlite3.Connection) -> None:
+    version_row = c.execute("SELECT MAX(version) AS v FROM audit_schema").fetchone()
+    version = int(version_row["v"] or 0)
+    columns = {row["name"] for row in c.execute("PRAGMA table_info(audit_log)")}
+    if version >= 2 and {"prev_hash", "entry_hash"} <= columns:
+        _install_immutable_triggers(c)
+        return
+
+    c.execute("BEGIN IMMEDIATE")
+    try:
+        c.execute("DROP TRIGGER IF EXISTS audit_log_no_update")
+        c.execute("DROP TRIGGER IF EXISTS audit_log_no_delete")
+        if "prev_hash" not in columns:
+            c.execute("ALTER TABLE audit_log ADD COLUMN prev_hash TEXT")
+        if "entry_hash" not in columns:
+            c.execute("ALTER TABLE audit_log ADD COLUMN entry_hash TEXT")
+
+        previous_hash = _GENESIS_HASH
+        rows = c.execute(
+            f"SELECT id, {', '.join(_HASH_FIELDS)} FROM audit_log ORDER BY id"  # noqa: S608
+        ).fetchall()
+        for row in rows:
+            values = dict(row)
+            current_hash = _entry_hash(previous_hash, values)
+            c.execute(
+                "UPDATE audit_log SET prev_hash=?, entry_hash=? WHERE id=?",
+                (previous_hash, current_hash, row["id"]),
+            )
+            previous_hash = current_hash
+
+        c.execute(
+            "INSERT OR IGNORE INTO audit_schema(version, applied_at) VALUES (2, ?)",
+            (time.time(),),
+        )
+        _install_immutable_triggers(c)
+        c.execute("COMMIT")
+    except Exception:
+        c.execute("ROLLBACK")
+        raise
 
 
 def init_store() -> None:
@@ -71,6 +158,7 @@ class AuditStore:
     def init(self) -> None:
         with _conn() as c:
             c.executescript(_SCHEMA_PATH.read_text())
+            _migrate_hash_chain(c)
 
     def append(
         self,
@@ -85,26 +173,60 @@ class AuditStore:
         params: Any = None,
         result: Any = None,
     ) -> int:
+        values = {
+            "ts": time.time(),
+            "session_id": session_id,
+            "channel": channel,
+            "channel_user_id": channel_user_id,
+            "trust_level": trust_level,
+            "event_type": event_type,
+            "tool": tool,
+            "policy_verdict": policy_verdict,
+            "params_json": _jsonify(params),
+            "result_json": _jsonify(result),
+        }
         with _conn() as c:
-            cur = c.execute(
-                """INSERT INTO audit_log
-                   (ts, session_id, channel, channel_user_id, trust_level,
-                    event_type, tool, policy_verdict, params_json, result_json)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    time.time(),
-                    session_id,
-                    channel,
-                    channel_user_id,
-                    trust_level,
-                    event_type,
-                    tool,
-                    policy_verdict,
-                    _jsonify(params),
-                    _jsonify(result),
-                ),
-            )
-            return int(cur.lastrowid or 0)
+            c.execute("BEGIN IMMEDIATE")
+            try:
+                previous = c.execute("SELECT entry_hash FROM audit_log ORDER BY id DESC LIMIT 1").fetchone()
+                previous_hash = previous["entry_hash"] if previous is not None else _GENESIS_HASH
+                if not isinstance(previous_hash, str) or len(previous_hash) != 64:
+                    raise RuntimeError("audit hash chain is invalid")
+                current_hash = _entry_hash(previous_hash, values)
+                cur = c.execute(
+                    """INSERT INTO audit_log
+                       (ts, session_id, channel, channel_user_id, trust_level,
+                        event_type, tool, policy_verdict, params_json, result_json,
+                        prev_hash, entry_hash)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        *(values[field] for field in _HASH_FIELDS),
+                        previous_hash,
+                        current_hash,
+                    ),
+                )
+                c.execute("COMMIT")
+                return int(cur.lastrowid or 0)
+            except Exception:
+                c.execute("ROLLBACK")
+                raise
+
+    def verify_chain(self) -> bool:
+        previous_hash = _GENESIS_HASH
+        with _conn() as c:
+            rows = c.execute(
+                f"SELECT prev_hash, entry_hash, {', '.join(_HASH_FIELDS)} "  # noqa: S608
+                "FROM audit_log ORDER BY id"
+            ).fetchall()
+        for row in rows:
+            values = dict(row)
+            if values.pop("prev_hash") != previous_hash:
+                return False
+            entry_hash = values.pop("entry_hash")
+            if entry_hash != _entry_hash(previous_hash, values):
+                return False
+            previous_hash = entry_hash
+        return True
 
     def query(
         self,
@@ -174,3 +296,7 @@ def query(limit: int = 100, session_id: str | None = None, channel: str | None =
 
 def schema_version() -> int:
     return get_store().schema_version()
+
+
+def verify_chain() -> bool:
+    return get_store().verify_chain()

@@ -77,3 +77,22 @@ def test_worker_hardens_before_loading_adapter(monkeypatch):
     sandbox_runner.main()
 
     assert events == ["harden", "run:telegram"]
+
+
+def test_worker_installs_kernel_guard_before_python_guard(monkeypatch, tmp_path):
+    from glc.channels import sandbox_runner
+    from glc.security import process_guard, runtime_isolation
+
+    events: list[str] = []
+    monkeypatch.setattr(sandbox_runner, "_RUNTIME_HOME", tmp_path / "runtime")
+    monkeypatch.setattr(sandbox_runner, "_drop_privileges", lambda: events.append("drop"))
+    monkeypatch.setattr(
+        runtime_isolation,
+        "install_kernel_isolation",
+        lambda path: events.append(f"kernel:{path.name}"),
+    )
+    monkeypatch.setattr(process_guard, "install_process_guard", lambda: events.append("python"))
+
+    sandbox_runner._harden_runtime()
+
+    assert events == ["drop", "kernel:runtime", "python"]

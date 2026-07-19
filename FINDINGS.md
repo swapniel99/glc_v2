@@ -250,6 +250,23 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
 
 ## Inherited Leak Remediations
 
+### Leak 2: Mutable Audit Storage
+
+- Source: [`ISSUES_TO_FIX.md`](ISSUES_TO_FIX.md), inherited Leak 2; not a new Part 2 finding.
+- Finding: Audit rows were append-only only by Python API convention. SQLite permitted direct update/delete and rows had no cryptographic chain, so offline modification was neither prevented nor detectable.
+- Reference invariant(s): 7.
+- Attacker role: Compromised adapter.
+- Status: Fixed locally; deployment re-check pending.
+- Evidence / fix:
+  - [`modal_app.py`](modal_app.py) retains the dedicated serialized audit Function and Volume. Gateway and adapter Sandboxes do not mount the audit Volume.
+  - [`glc/audit/store.py`](glc/audit/store.py) migrates existing version-1 rows to schema version 2, backfills a deterministic SHA-256 chain, and serializes each append with `BEGIN IMMEDIATE`.
+  - Every new row binds all event fields and the prior row hash. `verify_chain()` detects content modification, non-tail deletion, and reordering; database triggers prevent all normal deletion.
+  - SQLite `BEFORE UPDATE` and `BEFORE DELETE` triggers reject row mutation after migration.
+- Verification record:
+  - [`tests/test_audit_log.py`](tests/test_audit_log.py) covers chain linkage, verification, update/delete rejection, offline-tamper detection, and version-1 backfill.
+  - [`tests/test_modal_audit_writer.py`](tests/test_modal_audit_writer.py) continues serialized writer, Volume separation, durability, and remote-proxy coverage.
+  - Combined Leak 2/7 focused suite: 31 passed, 1 Linux-only integration test skipped on macOS. Full suite: 391 passed, 1 skipped. Focused Ruff, mypy, and `git diff --check` passed.
+
 ### Leak 4: Adapter Access To Installation/Control Token
 
 - Source: [`ISSUES_TO_FIX.md`](ISSUES_TO_FIX.md), inherited Leak 4; not a new Part 2 finding.
@@ -299,13 +316,17 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
 - Reference invariant(s): 1, 8.
 - Attacker role: Compromised adapter.
 - Status: Fixed locally; deployment re-check pending.
+- Kernel enforcement added:
+  - [`glc/security/runtime_isolation.py`](glc/security/runtime_isolation.py) installs Landlock before adapter import. Filesystem mutation is permitted only below private ephemeral `/tmp/glc-adapter`; code, dependencies, system paths, and accidental mounts remain kernel-enforced read-only.
+  - Same module installs seccomp BPF with thread synchronization. It denies exec, fork-like clone, ptrace, namespace/mount, kernel-module, BPF, keyring, cross-process memory, and related escape syscalls. Unsupported kernels or architectures fail closed.
+  - [`tests/test_runtime_isolation.py`](tests/test_runtime_isolation.py) verifies filesystem rights, seccomp deny rules, unsupported-platform fail-closed behavior, and performs live Landlock/seccomp enforcement on Linux amd64.
+  - Current post-kernel verification: combined Leak 2/7 focused suite 31 passed, 1 Linux-only integration test skipped on macOS; full suite 391 passed, 1 skipped. Focused Ruff and mypy passed.
 - Evidence / fix:
   - [`pyproject.toml`](pyproject.toml) and [`uv.lock`](uv.lock) define lock-backed `adapter` and `adapter-voice` runtime groups. Core adapters receive only HTTP, Pydantic, and YAML dependencies; heavy voice packages are isolated to `local_mic`.
   - [`modal_app.py`](modal_app.py) copies adapter code into the image, removes write bits, and removes shells, package installers, and OS package managers after image construction.
   - [`glc/channels/sandbox_runner.py`](glc/channels/sandbox_runner.py) drops root groups and switches to numeric UID/GID 65532 before importing selected adapter code. Only private ephemeral config and temporary directories under `/tmp` remain writable.
   - [`glc/security/process_guard.py`](glc/security/process_guard.py) blocks standard Python subprocess, shell, fork, spawn, exec, asyncio subprocess, and multiprocessing APIs before adapter import.
-  - Sandboxes use Modal's default gVisor syscall boundary, domain allowlists or complete network blocking, no gateway Volume, no OIDC identity, no exposed ports, and hard CPU, memory, idle, and lifetime caps.
-  - Modal 1.5.1 exposes no read-only-root, custom seccomp, Linux capability-drop, or runtime-user parameters. Non-root execution plus root-owned, non-writable image paths provides the enforceable equivalent for code and system files; `/tmp` stays writable for transient adapter state.
+  - Sandboxes retain domain allowlists or complete network blocking, no gateway Volume, no OIDC identity, no exposed ports, and hard CPU, memory, idle, and lifetime caps.
 - Verification record:
   - [`tests/test_adapter_process_hardening.py`](tests/test_adapter_process_hardening.py) verifies standard process APIs fail closed, root privileges are dropped in group/GID/UID order, and hardening runs before adapter load.
   - [`tests/test_adapter_sandbox.py`](tests/test_adapter_sandbox.py) verifies minimal versus voice image selection, shell/installer removal, non-writable code configuration, no inherited mounts/secrets, egress restrictions, and hard resource/identity settings.

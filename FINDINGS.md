@@ -252,6 +252,23 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
   - Focused Ruff and mypy checks passed.
   - Deployment verification: The sixth invalid pairing confirmation returned `429` with `Retry-After: 900`.
 
+## F-014: Alternate Image Block URL Bypass
+
+- Finding: `/v1/chat` recognized `image` and `input_image` content blocks as vision input but resolved external URLs only for `image_url` blocks. Alternate direct `url` or nested `source.url` values could therefore pass unchanged to an OpenAI-compatible provider and trigger provider-side URL retrieval.
+- Reference invariant(s): 1, 8.
+- Attacker role: Outsider.
+- Access prerequisite: Valid installation token after F-003; image-capable model provider that accepts or interprets the forwarded alternate block.
+- Status: Verified deployed.
+- Evidence / fix:
+  - [`glc/routes/chat.py`](glc/routes/chat.py) now sends `image`, `input_image`, direct `url`, and nested `source.url` through the same allowlist, DNS/public-IP, redirect, proxy, and size controls used for `image_url`.
+  - Resolved alternate blocks are normalized to canonical `image_url` blocks containing `data:` URLs. Non-HTTP(S), non-`data:` URL values fail closed.
+  - [`tests/test_image_url_ssrf.py`](tests/test_image_url_ssrf.py) covers all alternate forms and proves no external URL reaches an OpenAI-compatible provider payload.
+- Verification record:
+  - Focused image, endpoint-limit, and error-privacy suites: 40 passed.
+  - Full suite: 400 passed, 1 skipped, 1 unrelated Starlette deprecation warning.
+  - Focused Ruff, mypy, and `git diff --check` passed.
+  - Deployment verification (2026-07-20): deployed Modal gateway rejected unallowlisted `image.url`, `input_image.url`, and nested `image.source.url` requests with `400` before provider dispatch; `/healthz` returned `200`.
+
 ## Inherited Leak Remediations
 
 ### Leak 2: Mutable Audit Storage

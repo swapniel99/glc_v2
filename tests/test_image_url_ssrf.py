@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from urllib.parse import urlsplit
 
 import httpx
 import pytest
 from fastapi import HTTPException
 
+from glc import providers
 from glc.routes import chat
 
 
@@ -113,6 +115,64 @@ async def test_image_fetch_allows_public_destination(monkeypatch):
     messages = await chat._resolve_image_urls(_image_message("https://1.1.1.1/image.png"))
 
     assert messages[0]["content"][0]["image_url"]["url"] == "data:image/png;base64,aW1hZ2UtYnl0ZXM="
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "block",
+    [
+        {"type": "image", "url": "https://1.1.1.1/image.png"},
+        {"type": "input_image", "url": "https://1.1.1.1/image.png"},
+        {
+            "type": "image",
+            "source": {"type": "url", "url": "https://1.1.1.1/image.png"},
+        },
+        {
+            "type": "input_image",
+            "source": {"type": "url", "url": "https://1.1.1.1/image.png"},
+        },
+    ],
+)
+async def test_alternate_image_urls_are_resolved_before_provider_payload(monkeypatch, block):
+    _allow(monkeypatch, "1.1.1.1")
+    real_client = httpx.AsyncClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "image/png"},
+            content=b"image-bytes",
+            request=request,
+        )
+
+    def client_factory(**kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(**kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client_factory)
+    messages = await chat._resolve_image_urls([{"role": "user", "content": [block]}])
+    payload = providers.OpenAICompatProvider("test-key", "test-model")._translate_messages(
+        messages, ""
+    )
+
+    assert "https://1.1.1.1" not in json.dumps(payload)
+    assert payload[0]["content"][0] == {
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64,aW1hZ2UtYnl0ZXM="},
+    }
+
+
+@pytest.mark.asyncio
+async def test_alternate_image_url_rejects_non_http_scheme():
+    messages = [
+        {
+            "role": "user",
+            "content": [{"type": "input_image", "source": {"url": "file:///etc/passwd"}}],
+        }
+    ]
+
+    with pytest.raises(HTTPException, match="must use http or https"):
+        await chat._resolve_image_urls(messages)
 
 
 @pytest.mark.asyncio

@@ -432,12 +432,17 @@ async def _resolve_image_urls(messages):
         new_blocks = []
         changed = False
         for b in content:
-            if isinstance(b, dict) and b.get("type") == "image_url":
-                iu = b.get("image_url")
-                url = iu.get("url") if isinstance(iu, dict) else iu
+            if isinstance(b, dict) and b.get("type") in ("image_url", "image", "input_image"):
+                block_type = b.get("type")
+                if block_type == "image_url":
+                    image_url = b.get("image_url")
+                    url = image_url.get("url") if isinstance(image_url, dict) else image_url
+                else:
+                    source = b.get("source")
+                    url = b.get("url") or (source.get("url") if isinstance(source, dict) else None)
                 if isinstance(url, str) and url.startswith("data:") and len(url) > MAX_IMAGE_DATA_URL_CHARS:
                     raise HTTPException(413, "image exceeds size limit")
-                if isinstance(url, str) and url.startswith(("http://", "https://")):
+                if isinstance(url, str) and not url.startswith("data:"):
                     data_url = await _fetch_to_data_url(url)
                     new_blocks.append({"type": "image_url", "image_url": {"url": data_url}})
                     changed = True

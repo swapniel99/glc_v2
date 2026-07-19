@@ -26,10 +26,6 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
 7. Components must not edit or delete their own audit logs.
 8. Every run must have hard limits on time, tokens, tool calls, and cost.
 
-## Live verification update (2026-07-19)
-
-- **Verified deployed — Leak 7:** Modal's gVisor kernel reports Landlock as `ENOSYS`. The worker now explicitly permits only that absence, removes write permission from shared temporary directories before dropping privileges, and always installs seccomp plus the Python process guard. Other Landlock failures and every seccomp failure remain fatal. Live probes confirmed UID 65532, writes allowed only below `/tmp/glc-adapter`, writes denied elsewhere in `/tmp` and under `/opt/glc`, process execution denied, no gateway process visible in the Sandbox PID namespace, and the real adapter worker reached its request loop.
-
 ## Confirmed / Fixed Assignment Findings
 
 ## F-001: Production API Reconnaissance

@@ -58,6 +58,10 @@ def _install_sighup_reload() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    image_allowlist_count = sum(
+        bool(entry.strip()) for entry in os.getenv("GLC_IMAGE_URL_ALLOWLIST", "").split(",")
+    )
+    print(f"[glc] image URL allowlist entries={image_allowlist_count}")
     await db.ainit()
     await init_audit()
     get_or_create_install_token()

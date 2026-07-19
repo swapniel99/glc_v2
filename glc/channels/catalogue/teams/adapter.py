@@ -19,17 +19,20 @@ import re
 import time
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import quote
 
 from glc.channels.base import ChannelAdapter
 from glc.channels.catalogue.teams.schemas import ADAPTIVE_CARD_CONTENT_TYPE
 from glc.channels.envelope import ChannelMessage, ChannelReply
 from glc.security.allowlists import allowed
+from glc.security.outbound_urls import validate_provider_url
 from glc.security.pairing import get_pairing_store
 from glc.security.trust_level import classify
 
 _MENTION_RE = re.compile(r"<at>[^<]*</at>\s*")
 
 _TOKEN_CACHE: dict[str, tuple[str, float]] = {}  # app_id -> (token, expires_at)
+_SERVICE_HOSTS = ("smba.trafficmanager.net", "*.botframework.com")
 
 
 def _bfs_first_textblock(card: dict[str, Any]) -> str | None:
@@ -114,7 +117,11 @@ class Adapter(ChannelAdapter):
         activity_id: str = str(raw["id"])
 
         conv = raw.get("conversation") or {}
-        service_url: str = str(raw.get("serviceUrl", ""))
+        service_url = validate_provider_url(
+            str(raw.get("serviceUrl", "")),
+            allowed_hosts=_SERVICE_HOSTS,
+            allow_query=False,
+        )
         conversation_id: str = str(conv.get("id", ""))
 
         trust_level = classify(self.name, user_id)
@@ -188,13 +195,26 @@ class Adapter(ChannelAdapter):
 
         import httpx
 
-        token = await _fetch_token()
-        url = (
-            f"{ctx['service_url'].rstrip('/')}/v3/conversations/"
-            f"{ctx['conversation_id']}/activities/{reply.thread_id or ''}"
+        service_url = validate_provider_url(
+            ctx["service_url"],
+            allowed_hosts=_SERVICE_HOSTS,
+            allow_query=False,
         )
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        conversation_id = quote(ctx["conversation_id"], safe="")
+        activity_id = quote(reply.thread_id or "", safe="")
+        url = (
+            f"{service_url.rstrip('/')}/v3/conversations/"
+            f"{conversation_id}/activities/{activity_id}"
+        )
+        token = await _fetch_token()
+        async with httpx.AsyncClient(
+            timeout=10.0,
+            follow_redirects=False,
+            trust_env=False,
+        ) as client:
             resp = await client.post(url, json=payload, headers={"Authorization": f"Bearer {token}"})
+            if resp.is_redirect:
+                raise RuntimeError("Teams service URL redirected")
             if resp.status_code == 429:
                 return {
                     "status": 429,

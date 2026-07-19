@@ -164,6 +164,44 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
   - Writer reloads its Volume before every operation, closes SQLite connections, then explicitly commits the Volume snapshot.
   - [`tests/test_modal_audit_writer.py`](tests/test_modal_audit_writer.py) verifies reload/commit durability behavior, remote forwarding, and gateway/audit Volume separation.
 
+## F-010: Teams `serviceUrl` Credential Forwarding
+
+- Finding: Teams adapter trusted inbound Activity `serviceUrl`, cached it, then sent a Bot Framework bearer token to that URL when replying. A forged or misvalidated Activity could redirect credential-bearing traffic or target internal services.
+- Reference invariant(s): 1, 8.
+- Attacker role: Outsider.
+- Access prerequisite: Attacker-controlled Activity reaches adapter because Bot Framework JWT validation is absent or bypassed. Modal egress reduced reachable targets but did not provide application-layer validation for local or non-Modal execution.
+- Status: Verified deployed.
+- Evidence / fix:
+  - [`glc/security/outbound_urls.py`](glc/security/outbound_urls.py) requires HTTPS, port 443, no URL credentials, and exact or dot-boundary wildcard host matches.
+  - [`glc/channels/catalogue/teams/adapter.py`](glc/channels/catalogue/teams/adapter.py) accepts only `smba.trafficmanager.net` or `*.botframework.com`, validates before caching and again before token acquisition, rejects redirects, ignores proxy environment variables, and URL-escapes conversation/activity identifiers.
+  - [`modal_app.py`](modal_app.py) narrows Teams egress from broad `*.trafficmanager.net` to exact `smba.trafficmanager.net` while retaining required Microsoft login and Bot Framework hosts.
+  - Bot Framework JWT verification remains a separate ingress-authentication requirement; outbound validation prevents token forwarding even if a forged Activity reaches adapter.
+- Verification record:
+  - [`tests/test_outbound_url_security.py`](tests/test_outbound_url_security.py) verifies attacker hosts, private addresses, Traffic Manager lookalikes, cache tampering, token-before-validation ordering, and redirect rejection.
+  - Focused Teams/Twilio security and contract suites: 79 passed.
+  - Full suite with explicit writable ledger (`GLC_GATEWAY_DB=/private/tmp/glc-v2-outbound-full-final.sqlite`): 356 passed, 1 unrelated Starlette deprecation warning.
+  - Focused Ruff, mypy, and `git diff --check` passed.
+  - Deployment verification (2026-07-19): Modal runtime probe rejected attacker-controlled Teams `serviceUrl`; final app deployment succeeded after setting gateway/policy `PYTHONPATH=/root` so mounted reviewed source overrides stale installed package. Gateway `/healthz` returned 200.
+
+## F-011: Twilio MMS Credential Forwarding
+
+- Finding: Twilio SMS adapter fetched inbound `MediaUrl` using Account SID and auth token as HTTP Basic Auth without validating destination. A forged or misrouted webhook could disclose credentials to an attacker host or perform SSRF.
+- Reference invariant(s): 1, 8.
+- Attacker role: Outsider.
+- Access prerequisite: Attacker-controlled `MediaUrl` reaches live adapter because Twilio signature verification is absent or bypassed. Properly signed Twilio webhooks and Modal egress reduced exposure but were not enforced inside fetch function.
+- Status: Verified deployed.
+- Evidence / fix:
+  - [`glc/channels/catalogue/twilio_sms/adapter.py`](glc/channels/catalogue/twilio_sms/adapter.py) validates destination before reading or attaching credentials; only HTTPS `api.twilio.com` on port 443 is accepted.
+  - Redirect following and proxy environment inheritance are disabled. Redirect responses fail closed, preventing credential forwarding to redirect targets.
+  - Media downloads stream with a 5 MiB hard limit, including `Content-Length` pre-check and incremental byte enforcement.
+  - Existing Modal Sandbox egress remains restricted to `api.twilio.com`.
+- Verification record:
+  - [`tests/test_outbound_url_security.py`](tests/test_outbound_url_security.py) verifies rejected attacker destinations create no HTTP client, allowed authenticated downloads succeed, redirects stop after one request, and oversized responses fail.
+  - Focused Teams/Twilio security and contract suites: 79 passed.
+  - Full suite with explicit writable ledger (`GLC_GATEWAY_DB=/private/tmp/glc-v2-outbound-full-final.sqlite`): 356 passed, 1 unrelated Starlette deprecation warning.
+  - Focused Ruff, mypy, and `git diff --check` passed.
+  - Deployment verification (2026-07-19): Modal runtime probe rejected attacker-controlled Twilio `MediaUrl`; final app deployment succeeded with Sandbox egress still restricted to `api.twilio.com`. Gateway `/healthz` returned 200; `/v1/status` returned 401 without credentials; `/openapi.json` returned 404.
+
 ## Inherited Leak Remediations
 
 ### Leak 4: Adapter Access To Installation/Control Token

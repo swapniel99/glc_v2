@@ -49,12 +49,7 @@ gateway_image = (
         uv_version=UV_VERSION,
         extra_options="--no-dev",
     )
-    .env(
-        {
-            "GLC_CONFIG_DIR": "/data/glc",
-            "GLC_IMAGE_URL_ALLOWLIST": os.getenv("GLC_IMAGE_URL_ALLOWLIST", ""),
-        }
-    )
+    .env({"GLC_CONFIG_DIR": "/data/glc", "PYTHONPATH": "/root"})
     .add_local_dir(str(LOCAL_GLC), remote_path="/root/glc")
     .add_local_file(str(PYPROJECT), remote_path="/root/pyproject.toml")
     .add_local_file(str(UV_LOCK), remote_path="/root/uv.lock")
@@ -111,7 +106,13 @@ policy_image = (
         uv_version=UV_VERSION,
         extra_options="--no-dev",
     )
-    .env({"GLC_CONFIG_DIR": "/tmp/glc-policy", "GLC_ENV": "production"})
+    .env(
+        {
+            "GLC_CONFIG_DIR": "/tmp/glc-policy",
+            "GLC_ENV": "production",
+            "PYTHONPATH": "/root",
+        }
+    )
     .add_local_dir(str(LOCAL_GLC), remote_path="/root/glc")
     .add_local_file(str(UV_LOCK), remote_path="/root/uv.lock")
 )
@@ -132,6 +133,7 @@ llm_secret = modal.Secret.from_name("glc-llm-keys")
 capability_secret = modal.Secret.from_name("glc-capability-signing-key")
 capability_nonces = modal.Dict.from_name("glc-capability-nonces", create_if_missing=True)
 cost_signing_secret = modal.Secret.from_name("glc-cost-ledger-signing-key")
+image_url_config = modal.Secret.from_name("glc-image-url-config")
 
 logger = logging.getLogger(__name__)
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -149,7 +151,7 @@ _DEFAULT_ADAPTER_EGRESS: dict[str, tuple[str, ...]] = {
     "matrix": (),
     "signal": (),
     "slack": ("slack.com",),
-    "teams": ("login.microsoftonline.com", "*.trafficmanager.net", "*.botframework.com"),
+    "teams": ("login.microsoftonline.com", "smba.trafficmanager.net", "*.botframework.com"),
     "telegram": ("api.telegram.org",),
     "twilio_sms": ("api.twilio.com",),
     "twilio_voice": ("api.twilio.com",),
@@ -635,7 +637,7 @@ class ModalAdapterSessionFactory:
 @app.function(
     image=gateway_image,
     volumes={"/data": data_volume},
-    secrets=[llm_secret, cost_signing_secret],
+    secrets=[llm_secret, cost_signing_secret, image_url_config],
     min_containers=0,  # scale to zero when idle -> protects the free tier
 )
 @modal.asgi_app()

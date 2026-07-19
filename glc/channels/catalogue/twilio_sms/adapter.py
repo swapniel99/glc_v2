@@ -24,6 +24,7 @@ import httpx
 from glc.channels.base import ChannelAdapter
 from glc.channels.envelope import Attachment, ChannelMessage, ChannelReply
 from glc.security.allowlists import allowed
+from glc.security.outbound_urls import UnsafeOutboundURL, validate_provider_url
 from glc.security.pairing import get_pairing_store
 from glc.security.trust_level import classify
 
@@ -36,6 +37,8 @@ AttachmentKind = Literal["image", "audio", "video", "file"]
 _STOP_KEYWORDS = {"STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"}
 _START_KEYWORDS = {"START", "YES", "UNSTOP"}
 _HELP_KEYWORDS = {"HELP", "INFO"}
+_MEDIA_HOSTS = ("api.twilio.com",)
+_MAX_MEDIA_BYTES = 5 * 1024 * 1024
 
 
 def _media_kind(content_type: str) -> AttachmentKind:
@@ -296,9 +299,24 @@ class Adapter(ChannelAdapter):
 
     async def _download_media(self, url: str) -> bytes:
         """Download Twilio-hosted MMS media using Basic Auth."""
+        url = validate_provider_url(url, allowed_hosts=_MEDIA_HOSTS)
         account_sid = os.environ.get("TWILIO_ACCOUNT_SID", "")
         auth_token = os.environ.get("TWILIO_AUTH_TOKEN", "")
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(url, auth=(account_sid, auth_token))
-            resp.raise_for_status()
-            return resp.content
+        async with httpx.AsyncClient(
+            timeout=30.0,
+            follow_redirects=False,
+            trust_env=False,
+        ) as client:
+            async with client.stream("GET", url, auth=(account_sid, auth_token)) as resp:
+                if resp.is_redirect:
+                    raise UnsafeOutboundURL("Twilio media URL redirected")
+                resp.raise_for_status()
+                content_length = resp.headers.get("content-length")
+                if content_length and int(content_length) > _MAX_MEDIA_BYTES:
+                    raise ValueError("Twilio media exceeds size limit")
+                data = bytearray()
+                async for chunk in resp.aiter_bytes():
+                    if len(data) + len(chunk) > _MAX_MEDIA_BYTES:
+                        raise ValueError("Twilio media exceeds size limit")
+                    data.extend(chunk)
+                return bytes(data)

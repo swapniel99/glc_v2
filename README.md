@@ -18,7 +18,12 @@ comma-separated list; `*.example.com` matches subdomains but not apex:
 export GLC_IMAGE_URL_ALLOWLIST='images.example.com,*.trusted-cdn.example'
 ```
 
-Set same variable when running `modal deploy modal_app.py`.
+For Modal, store same value as deployment configuration before deploying:
+
+```sh
+uv run modal secret create glc-image-url-config \
+  GLC_IMAGE_URL_ALLOWLIST='images.example.com,*.trusted-cdn.example'
+```
 
 This is a `uv` project.
 

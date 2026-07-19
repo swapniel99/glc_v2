@@ -174,7 +174,11 @@ def test_modal_cost_boundary_excludes_adapter_and_gateway_volumes():
     gateway_secret_names = [secret.name for secret in modal_app.fastapi_app.spec.secrets]
 
     assert writer_secret_names == ["glc-cost-ledger-signing-key"]
-    assert gateway_secret_names == ["glc-llm-keys", "glc-cost-ledger-signing-key"]
+    assert gateway_secret_names == [
+        "glc-llm-keys",
+        "glc-cost-ledger-signing-key",
+        "glc-image-url-config",
+    ]
     assert modal_app.cost_ledger_writer.spec.volumes["/cost"].name == "glc-cost"
     assert "/cost" not in modal_app.fastapi_app.spec.volumes
     assert "GLC_COST_LEDGER_SIGNING_KEY" not in modal_app._ADAPTER_IMAGE_ENV

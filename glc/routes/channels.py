@@ -44,6 +44,13 @@ async def channel_ws(websocket: WebSocket, name: str):
     try:
         credential_claims = verify_channel_credential(presented, channel=name)
     except InvalidChannelCredential:
+        audit_append(
+            channel=name,
+            channel_user_id="",
+            trust_level="untrusted",
+            event_type="channel_auth_failed",
+            result={"reason": "invalid_channel_credential"},
+        )
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 

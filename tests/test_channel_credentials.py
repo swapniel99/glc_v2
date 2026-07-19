@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import pytest
 from starlette.websockets import WebSocketDisconnect
 
+from glc.audit import query as query_audit
 from glc.channels.envelope import ChannelMessage
 from glc.security.channel_credentials import (
     InvalidChannelCredential,
@@ -75,6 +76,12 @@ def test_channel_websocket_rejects_unscoped_auth(app_client, install_token, auth
             pass
 
     assert exc_info.value.code == 1008
+    rows = query_audit(channel="telegram")
+    assert len(rows) == 1
+    assert rows[0]["event_type"] == "channel_auth_failed"
+    assert rows[0]["channel_user_id"] == ""
+    assert rows[0]["trust_level"] == "untrusted"
+    assert rows[0]["result_json"] == '{"reason": "invalid_channel_credential"}'
 
 
 def test_channel_websocket_accepts_scoped_credential(app_client, install_token):
@@ -121,6 +128,11 @@ def test_channel_websocket_rejects_cross_channel_envelope(app_client, install_to
         response = websocket.receive_json()
 
     assert response == {"error": "channel does not match route"}
+    rows = query_audit(channel="whatsapp")
+    assert len(rows) == 1
+    assert rows[0]["event_type"] == "channel_mismatch"
+    assert rows[0]["channel_user_id"] == "owner"
+    assert rows[0]["result_json"] == '{"envelope_channel": "discord"}'
 
 
 def test_channel_websocket_closes_when_credential_expires(app_client, install_token):

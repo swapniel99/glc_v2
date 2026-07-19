@@ -171,12 +171,12 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
 - Evidence / fix:
   - [`glc/security/channel_credentials.py`](glc/security/channel_credentials.py) issues HMAC-signed WebSocket credentials bound to one channel, a fixed audience, issue and expiry times, and a random nonce. Default lifetime is 60 seconds; maximum lifetime is five minutes.
   - [`glc/routes/control.py`](glc/routes/control.py) exposes credential minting only through `/v1/control/channels/{channel}/credential`, authenticated with the installation token. Adapter processes receive only the resulting scoped credential.
-  - [`glc/routes/channels.py`](glc/routes/channels.py) rejects missing credentials, the installation token itself, query-string credentials, invalid signatures, expired credentials, and credentials scoped to another channel. Active WebSocket sessions close when their credential expires.
+  - [`glc/routes/channels.py`](glc/routes/channels.py) rejects missing credentials, the installation token itself, query-string credentials, invalid signatures, expired credentials, and credentials scoped to another channel. Rejections append a generic `channel_auth_failed` event without recording the credential or internal validation detail. Active WebSocket sessions close when their credential expires.
   - Route/channel mismatch is rejected and audited, preventing a valid credential for one route from carrying an envelope for another channel.
   - External Twilio SMS, Telegram, and Discord bridge code now reads only `GLC_CHANNEL_CREDENTIAL`; no channel adapter code imports or calls `get_or_create_install_token()`.
   - [`README.md`](README.md) documents operator-side minting and passing only the scoped credential to an adapter.
 - Verification record:
-  - [`tests/test_channel_credentials.py`](tests/test_channel_credentials.py) covers channel binding, tampering, excessive lifetime, authenticated issuance, rejection of missing/master/query/wrong-channel credentials, successful scoped authentication, cross-channel envelope rejection, and active-session expiry.
+  - [`tests/test_channel_credentials.py`](tests/test_channel_credentials.py) covers channel binding, tampering, excessive lifetime, authenticated issuance, rejection and auditing of missing/master/query/wrong-channel credentials, successful scoped authentication, cross-channel envelope rejection and audit persistence, and active-session expiry.
   - [`glc/channels/catalogue/twilio_sms/tests/test_webhook_route.py`](glc/channels/catalogue/twilio_sms/tests/test_webhook_route.py) verifies the bridge fails closed without `GLC_CHANNEL_CREDENTIAL` instead of loading the installation token.
   - Focused security suite: 31 passed.
   - Full suite with an explicit writable test ledger (`GLC_GATEWAY_DB=/private/tmp/glc-v2-full-suite.sqlite`): 311 passed.
@@ -225,3 +225,19 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
   - Broader channel and security suite: 193 passed.
   - Full suite with an explicit writable test ledger (`GLC_GATEWAY_DB=/private/tmp/glc-v2-full-suite-leak7.sqlite`): 323 passed.
   - Lockfile check, focused Ruff checks, syntax compilation, and `git diff --check` passed.
+
+### Leak 9: WebSocket Channel-Route Spoofing
+
+- Source: [`ISSUES_TO_FIX.md`](ISSUES_TO_FIX.md), inherited Leak 9 and C2; not a new Part 2 finding.
+- Finding: A channel WebSocket could attempt to authenticate with a credential for another route or submit an envelope claiming another channel identity.
+- Reference invariant(s): 2.
+- Attacker role: Compromised adapter.
+- Status: Fixed locally; deployment re-check pending.
+- Evidence / fix:
+  - [`glc/security/channel_credentials.py`](glc/security/channel_credentials.py) cryptographically binds each short-lived credential to one channel, and [`glc/routes/channels.py`](glc/routes/channels.py) verifies that scope against the route before accepting the WebSocket.
+  - Failed WebSocket authentication appends a generic `channel_auth_failed` event containing the attempted route but no credential or internal validation detail.
+  - After authentication, any envelope whose channel differs from the route is rejected and appended as `channel_mismatch` before allowlist, rate-limit, or message processing.
+- Verification record:
+  - [`tests/test_channel_credentials.py`](tests/test_channel_credentials.py) verifies rejection and audit persistence for missing, installation-token, query-token, and wrong-channel authentication, plus cross-channel envelope rejection and audit persistence.
+  - Focused channel-credential and audit suite: 16 passed.
+  - Full suite with an explicit writable test ledger (`GLC_GATEWAY_DB=/private/tmp/glc-v2-full-suite-leak9.sqlite`): 323 passed.

@@ -19,6 +19,12 @@ class RuntimeIsolationError(RuntimeError):
     pass
 
 
+class LandlockUnavailableError(RuntimeIsolationError):
+    """Landlock is absent from the host kernel."""
+
+    pass
+
+
 _SYS_LANDLOCK_CREATE_RULESET = 444
 _SYS_LANDLOCK_ADD_RULE = 445
 _SYS_LANDLOCK_RESTRICT_SELF = 446
@@ -192,6 +198,10 @@ def install_filesystem_guard(writable_root: Path) -> None:
             0,
         )
     except OSError as exc:
+        if exc.errno == errno.ENOSYS:
+            raise LandlockUnavailableError(
+                "Landlock filesystem isolation is unavailable"
+            ) from exc
         raise RuntimeIsolationError("Landlock filesystem isolation is unavailable") from exc
 
     path_fd = -1
@@ -276,6 +286,12 @@ def install_seccomp_guard() -> None:
         raise RuntimeIsolationError("failed to install seccomp syscall isolation") from exc
 
 
-def install_kernel_isolation(writable_root: Path) -> None:
-    install_filesystem_guard(writable_root)
+def install_kernel_isolation(
+    writable_root: Path, *, allow_missing_landlock: bool = False
+) -> None:
+    try:
+        install_filesystem_guard(writable_root)
+    except LandlockUnavailableError:
+        if not allow_missing_landlock:
+            raise
     install_seccomp_guard()

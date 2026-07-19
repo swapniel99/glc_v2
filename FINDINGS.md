@@ -26,6 +26,10 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
 7. Components must not edit or delete their own audit logs.
 8. Every run must have hard limits on time, tokens, tool calls, and cost.
 
+## Live verification update (2026-07-19)
+
+- **Verified deployed — Leak 7:** Modal's gVisor kernel reports Landlock as `ENOSYS`. The worker now explicitly permits only that absence, removes write permission from shared temporary directories before dropping privileges, and always installs seccomp plus the Python process guard. Other Landlock failures and every seccomp failure remain fatal. Live probes confirmed UID 65532, writes allowed only below `/tmp/glc-adapter`, writes denied elsewhere in `/tmp` and under `/opt/glc`, process execution denied, no gateway process visible in the Sandbox PID namespace, and the real adapter worker reached its request loop.
+
 ## Confirmed / Fixed Assignment Findings
 
 ## F-001: Production API Reconnaissance
@@ -140,7 +144,7 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
 - Reference invariant(s): 8.
 - Attacker role: Outsider.
 - Access prerequisite: Ability to alter dependency resolution or mutable upstream image content through a compromised package or registry release path.
-- Status: Fixed locally; deployment re-check pending.
+- Status: Verified deployed.
 - Fix commit: `ab3592d`.
 - Evidence / fix:
   - [`modal_app.py`](modal_app.py) pins the Debian `bookworm-slim` Linux amd64 manifest by SHA-256 digest for both gateway and adapter images.
@@ -150,19 +154,21 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
   - `docker-buildx imagetools inspect debian:bookworm-slim` confirmed the pinned digest is the current `linux/amd64` manifest.
   - `UV_CACHE_DIR=/tmp/glc-v2-uv-cache uv lock --check --offline` resolved all 167 locked packages without changing the lockfile.
   - `ruff check modal_app.py`, `git diff --check`, syntax parsing, and importing `modal_app` passed locally.
-  - Remote Modal image build and deployment verification remain pending.
+  - Deployment verification: Modal built and deployed the lockfile- and digest-pinned images.
 
 ## F-009: Concurrent SQLite Audit Writers
 
 - Finding: An autoscaled Modal gateway could create multiple SQLite writers for one audit file, while Volume changes lacked explicit reload and commit operations. This could split or lose audit history.
 - Reference invariant(s): 7.
 - Attacker role: Compromised component or concurrent gateway traffic.
-- Status: Fixed locally; deployment re-check pending.
+- Status: Verified deployed.
 - Evidence / fix:
   - [`modal_app.py`](modal_app.py) gives audit storage a dedicated `glc-audit` Volume mounted only by `audit_writer`.
   - `audit_writer` is capped at one container and one concurrent input. Autoscaled gateway replicas use a store-compatible remote proxy and never mount or open the audit SQLite file.
   - Writer reloads its Volume before every operation, closes SQLite connections, then explicitly commits the Volume snapshot.
   - [`tests/test_modal_audit_writer.py`](tests/test_modal_audit_writer.py) verifies reload/commit durability behavior, remote forwarding, and gateway/audit Volume separation.
+- Verification record:
+  - Deployment verification: Dedicated writer appended a benign audit record, `verify_chain` returned true, and a non-append writer operation was rejected.
 
 ## F-010: Teams `serviceUrl` Credential Forwarding
 
@@ -208,7 +214,7 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
 - Finding: Model, embedding, speech, and transcription routes had no gateway request-rate boundary. Several request models also accepted unbounded output tokens, batch size/concurrency, text, audio, or image bytes, allowing excessive provider spend and gateway memory/CPU consumption.
 - Reference invariant(s): 8.
 - Attacker role: Outsider before F-003; after F-003, access requires a valid installation token.
-- Status: Fixed locally; deployment re-check pending.
+- Status: Verified deployed.
 - Evidence / fix:
   - [`glc/security/endpoint_limits.py`](glc/security/endpoint_limits.py) applies separate per-minute and 24-hour sliding-window quotas to chat, batch, vision, embed, speak, and transcribe. It returns `429` with `Retry-After`; authentication runs before consuming the request budget.
   - [`modal_app.py`](modal_app.py) sends all autoscaled gateway replicas through one serialized `endpoint_rate_limit_writer`. Sliding-window timestamps persist in the named `glc-endpoint-rate-windows` Modal Dict. Local execution uses a thread-safe implementation of the same interface.
@@ -219,6 +225,7 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
   - Focused C5 security suite: 16 passed.
   - Full suite: 376 passed.
   - Focused Ruff, focused mypy, and `git diff --check` passed.
+  - Deployment verification: The eleventh invalid batch request returned `429` with `Retry-After`.
 
 ## F-013: Pairing-Code Confirmation Brute Force
 
@@ -228,7 +235,7 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
   guesses during that lifetime.
 - Reference invariant(s): 2, 4.
 - Attacker role: User or attacker holding the installation token.
-- Status: Fixed locally; deployment re-check pending.
+- Status: Verified deployed.
 - Evidence / fix:
   - [`glc/security/pairing.py`](glc/security/pairing.py) persistently tracks failed
     attempts by direct client address. Five failures within five minutes lock that
@@ -247,6 +254,7 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
   - Focused pairing/control suite: 21 passed.
   - Full suite: 381 passed.
   - Focused Ruff and mypy checks passed.
+  - Deployment verification: The sixth invalid pairing confirmation returned `429` with `Retry-After: 900`.
 
 ## Inherited Leak Remediations
 
@@ -256,7 +264,7 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
 - Finding: Audit rows were append-only only by Python API convention. SQLite permitted direct update/delete and rows had no cryptographic chain, so offline modification was neither prevented nor detectable.
 - Reference invariant(s): 7.
 - Attacker role: Compromised adapter.
-- Status: Fixed locally; deployment re-check pending.
+- Status: Verified deployed.
 - Evidence / fix:
   - [`modal_app.py`](modal_app.py) retains the dedicated serialized audit Function and Volume. Gateway and adapter Sandboxes do not mount the audit Volume.
   - [`glc/audit/store.py`](glc/audit/store.py) migrates existing version-1 rows to schema version 2, backfills a deterministic SHA-256 chain, and serializes each append with `BEGIN IMMEDIATE`.
@@ -266,6 +274,7 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
   - [`tests/test_audit_log.py`](tests/test_audit_log.py) covers chain linkage, verification, update/delete rejection, offline-tamper detection, and version-1 backfill.
   - [`tests/test_modal_audit_writer.py`](tests/test_modal_audit_writer.py) continues serialized writer, Volume separation, durability, and remote-proxy coverage.
   - Combined Leak 2/7 focused suite: 31 passed, 1 Linux-only integration test skipped on macOS. Full suite: 391 passed, 1 skipped. Focused Ruff, mypy, and `git diff --check` passed.
+  - Deployment verification: Dedicated writer appended a benign audit record, `verify_chain` returned true, and a non-append writer operation was rejected.
 
 ### Leak 4: Adapter Access To Installation/Control Token
 
@@ -273,7 +282,7 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
 - Finding: Legacy WebSocket adapter bridges loaded the installation token directly, and `/v1/channels/{name}` accepted that master token through either an Authorization header or query parameter. Compromising one such adapter exposed a credential valid across gateway control and data-plane routes.
 - Reference invariant(s): 2, 4.
 - Attacker role: Compromised adapter.
-- Status: Fixed locally; deployment re-check pending.
+- Status: Verified deployed.
 - Evidence / fix:
   - [`glc/security/channel_credentials.py`](glc/security/channel_credentials.py) issues HMAC-signed WebSocket credentials bound to one channel, a fixed audience, issue and expiry times, and a random nonce. Default lifetime is 60 seconds; maximum lifetime is five minutes.
   - [`glc/routes/control.py`](glc/routes/control.py) exposes credential minting only through `/v1/control/channels/{channel}/credential`, authenticated with the installation token. Adapter processes receive only the resulting scoped credential.
@@ -287,6 +296,7 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
   - Focused security suite: 31 passed.
   - Full suite with an explicit writable test ledger (`GLC_GATEWAY_DB=/private/tmp/glc-v2-full-suite.sqlite`): 311 passed.
   - Focused Ruff checks and `git diff --check` passed.
+  - Deployment verification: Query-string credential rejected, header credential accepted, cross-channel envelope rejected, and both failure event types were present in audit.
 
 ### Leak 5: Policy Engine Monkey-Patching
 
@@ -294,7 +304,7 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
 - Finding: Modal gateway containers evaluated policy and held the capability-signing key in the same Python process. Rebinding the local evaluator could turn a denied action into a signed credential.
 - Reference invariant(s): 2, 6.
 - Attacker role: Gateway code execution; compromised adapters remain isolated in separate Sandboxes.
-- Status: Fixed locally; deployment re-check pending.
+- Status: Verified deployed.
 - Evidence / fix:
   - [`modal_app.py`](modal_app.py) runs policy evaluation, capability issuance, and credential redemption in a dedicated `policy_credential_service` Modal Function.
   - Only the policy Function receives `glc-capability-signing-key`. It mounts no gateway Volume and uses bundled, immutable `policy.yaml`; the gateway receives only provider keys and a remote authorizer proxy.
@@ -308,6 +318,7 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
   - Broader security suite: 46 passed.
   - Full suite with an explicit writable test ledger (`GLC_GATEWAY_DB=/private/tmp/glc-v2-full-suite-leak5.sqlite`): 318 passed.
   - Focused Ruff checks and `git diff --check` passed.
+  - Deployment verification: The deployed isolated policy service denied an untrusted `files.delete` request.
 
 ### Leak 7: Unrestricted Adapter Subprocess And Shell Access
 
@@ -315,9 +326,10 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
 - Finding: Adapter Sandboxes used the full application dependency image, started the Python worker with root privileges, left code and system paths writable to that worker, and retained normal shell and subprocess entry points.
 - Reference invariant(s): 1, 8.
 - Attacker role: Compromised adapter.
-- Status: Fixed locally; deployment re-check pending.
+- Status: Verified deployed.
 - Kernel enforcement added:
-  - [`glc/security/runtime_isolation.py`](glc/security/runtime_isolation.py) installs Landlock before adapter import. Filesystem mutation is permitted only below private ephemeral `/tmp/glc-adapter`; code, dependencies, system paths, and accidental mounts remain kernel-enforced read-only.
+  - [`glc/security/runtime_isolation.py`](glc/security/runtime_isolation.py) installs Landlock before adapter import when the kernel supports it. Modal's gVisor kernel returns `ENOSYS`; only that specific absence may use the explicit fallback, while other Landlock errors remain fatal.
+  - [`glc/channels/sandbox_runner.py`](glc/channels/sandbox_runner.py) prepares `/tmp/glc-adapter` for UID/GID 65532, removes shared write permission from `/tmp`, `/var/tmp`, and `/dev/shm`, then drops privileges. This leaves only the private ephemeral runtime directory writable even without Landlock.
   - Same module installs seccomp BPF with thread synchronization. It denies exec, fork-like clone, ptrace, namespace/mount, kernel-module, BPF, keyring, cross-process memory, and related escape syscalls. Unsupported kernels or architectures fail closed.
   - [`tests/test_runtime_isolation.py`](tests/test_runtime_isolation.py) verifies filesystem rights, seccomp deny rules, unsupported-platform fail-closed behavior, and performs live Landlock/seccomp enforcement on Linux amd64.
   - Current post-kernel verification: combined Leak 2/7 focused suite 31 passed, 1 Linux-only integration test skipped on macOS; full suite 391 passed, 1 skipped. Focused Ruff and mypy passed.
@@ -335,6 +347,8 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
   - Broader channel and security suite: 193 passed.
   - Full suite with an explicit writable test ledger (`GLC_GATEWAY_DB=/private/tmp/glc-v2-full-suite-leak7.sqlite`): 323 passed.
   - Lockfile check, focused Ruff checks, syntax compilation, and `git diff --check` passed.
+  - Compatibility verification: focused isolation/sandbox suite 20 passed, 1 Linux-only test skipped on macOS; full suite 395 passed, 1 skipped. Focused Ruff, mypy, and `git diff --check` passed.
+  - Deployment verification (2026-07-20): Modal deployment succeeded. A live hardened Sandbox ran as UID 65532, wrote inside `/tmp/glc-adapter`, rejected writes elsewhere in `/tmp` and under `/opt/glc`, rejected subprocess execution, and exposed only `dumb-init`, `modal-daemon`, and `python` in its PID namespace. Deployed logs confirmed the actual `sandbox_runner` imported the webhook adapter, entered its request loop, and handled the protocol probe.
 
 ### Leak 9: WebSocket Channel-Route Spoofing
 
@@ -342,7 +356,7 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
 - Finding: A channel WebSocket could attempt to authenticate with a credential for another route or submit an envelope claiming another channel identity.
 - Reference invariant(s): 2.
 - Attacker role: Compromised adapter.
-- Status: Fixed locally; deployment re-check pending.
+- Status: Verified deployed.
 - Evidence / fix:
   - [`glc/security/channel_credentials.py`](glc/security/channel_credentials.py) cryptographically binds each short-lived credential to one channel, and [`glc/routes/channels.py`](glc/routes/channels.py) verifies that scope against the route before accepting the WebSocket.
   - Failed WebSocket authentication appends a generic `channel_auth_failed` event containing the attempted route but no credential or internal validation detail.
@@ -351,6 +365,7 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
   - [`tests/test_channel_credentials.py`](tests/test_channel_credentials.py) verifies rejection and audit persistence for missing, installation-token, query-token, and wrong-channel authentication, plus cross-channel envelope rejection and audit persistence.
   - Focused channel-credential and audit suite: 16 passed.
   - Full suite with an explicit writable test ledger (`GLC_GATEWAY_DB=/private/tmp/glc-v2-full-suite-leak9.sqlite`): 323 passed.
+  - Deployment verification: Query-string credential rejected, header credential accepted, cross-channel envelope rejected, and both failure event types were present in audit.
 
 ### Leak 10: Cost Ledger Poisoning
 
@@ -358,7 +373,7 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
 - Finding: `log_call()` accepted arbitrary token counts and statuses, and Modal gateway replicas wrote cost SQLite state without an authenticated writer boundary. Malformed provider usage could also alter in-memory budget counters before persistence.
 - Reference invariant(s): 7, 8.
 - Attacker role: Compromised adapter.
-- Status: Fixed and deployed; live adversarial re-check pending.
+- Status: Verified deployed.
 - Evidence / fix:
   - [`glc/db.py`](glc/db.py) validates strict record fields and types, rejects negative or excessive metrics and unknown statuses, and HMAC-signs every record over all fields plus a timestamp and random nonce.
   - Signed appends verify with constant-time comparison. A unique writer nonce prevents replay; writer signatures and nonces are not returned by `/v1/calls`.
@@ -370,3 +385,4 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
   - Focused cost and gateway compatibility suite: 42 passed.
   - Full suite with an explicit writable test ledger (`GLC_GATEWAY_DB=/private/tmp/glc-v2-deploy-final.sqlite`): 336 passed.
   - Modal deployment smoke-check on 2026-07-19: `/healthz` returned 200, the root returned 200, the protected `/v1/status` route returned 401 without credentials, and post-fix logs contained no exceptions.
+  - Deployment verification: The deployed ledger writer rejected a malformed unsigned record.

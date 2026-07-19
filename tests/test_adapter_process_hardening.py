@@ -62,6 +62,36 @@ def test_worker_drops_root_to_unprivileged_numeric_user(monkeypatch):
     ]
 
 
+def test_worker_leaves_only_private_runtime_directory_writable(monkeypatch, tmp_path):
+    from glc.channels import sandbox_runner
+
+    shared = tmp_path / "shared"
+    runtime = shared / "adapter"
+    shared.mkdir(mode=0o777)
+    shared.chmod(0o777)
+    ownership: list[tuple[object, int, int]] = []
+    monkeypatch.setattr(sandbox_runner, "_RUNTIME_HOME", runtime)
+    monkeypatch.setattr(sandbox_runner, "_SHARED_WRITABLE_DIRS", (shared,))
+    monkeypatch.setattr(sandbox_runner.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        sandbox_runner.os,
+        "chown",
+        lambda path, uid, gid: ownership.append((path, uid, gid)),
+    )
+
+    assert sandbox_runner._prepare_runtime_filesystem()
+
+    assert shared.stat().st_mode & 0o777 == 0o755
+    assert runtime.stat().st_mode & 0o777 == 0o700
+    assert (runtime / "config").stat().st_mode & 0o777 == 0o700
+    assert (runtime / "tmp").stat().st_mode & 0o777 == 0o700
+    assert ownership == [
+        (runtime, sandbox_runner._RUNTIME_UID, sandbox_runner._RUNTIME_GID),
+        (runtime / "config", sandbox_runner._RUNTIME_UID, sandbox_runner._RUNTIME_GID),
+        (runtime / "tmp", sandbox_runner._RUNTIME_UID, sandbox_runner._RUNTIME_GID),
+    ]
+
+
 def test_worker_hardens_before_loading_adapter(monkeypatch):
     from glc.channels import sandbox_runner
 
@@ -89,10 +119,12 @@ def test_worker_installs_kernel_guard_before_python_guard(monkeypatch, tmp_path)
     monkeypatch.setattr(
         runtime_isolation,
         "install_kernel_isolation",
-        lambda path: events.append(f"kernel:{path.name}"),
+        lambda path, **kwargs: events.append(
+            f"kernel:{path.name}:{kwargs['allow_missing_landlock']}"
+        ),
     )
     monkeypatch.setattr(process_guard, "install_process_guard", lambda: events.append("python"))
 
     sandbox_runner._harden_runtime()
 
-    assert events == ["drop", "kernel:runtime", "python"]
+    assert events == ["drop", "kernel:runtime:False", "python"]

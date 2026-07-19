@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import platform
 import subprocess
 import sys
@@ -76,6 +77,46 @@ def test_filesystem_guard_requires_landlock_abi_three(monkeypatch, tmp_path):
     monkeypatch.setattr(runtime_isolation, "_syscall", lambda *args: 2)
 
     with pytest.raises(runtime_isolation.RuntimeIsolationError, match="ABI 3"):
+        runtime_isolation.install_filesystem_guard(tmp_path)
+
+
+def test_kernel_isolation_allows_explicit_missing_landlock_fallback(monkeypatch, tmp_path):
+    events: list[str] = []
+
+    def unavailable(_path):
+        events.append("landlock")
+        raise runtime_isolation.LandlockUnavailableError("unavailable")
+
+    monkeypatch.setattr(runtime_isolation, "install_filesystem_guard", unavailable)
+    monkeypatch.setattr(
+        runtime_isolation, "install_seccomp_guard", lambda: events.append("seccomp")
+    )
+
+    runtime_isolation.install_kernel_isolation(tmp_path, allow_missing_landlock=True)
+
+    assert events == ["landlock", "seccomp"]
+
+
+def test_kernel_isolation_rejects_missing_landlock_by_default(monkeypatch, tmp_path):
+    def unavailable(_path):
+        raise runtime_isolation.LandlockUnavailableError("unavailable")
+
+    monkeypatch.setattr(runtime_isolation, "install_filesystem_guard", unavailable)
+
+    with pytest.raises(runtime_isolation.LandlockUnavailableError):
+        runtime_isolation.install_kernel_isolation(tmp_path)
+
+
+def test_filesystem_guard_classifies_enosys_as_unavailable(monkeypatch, tmp_path):
+    monkeypatch.setattr(runtime_isolation.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(runtime_isolation.platform, "machine", lambda: "x86_64")
+
+    def unavailable(*_args):
+        raise OSError(errno.ENOSYS, "Function not implemented")
+
+    monkeypatch.setattr(runtime_isolation, "_syscall", unavailable)
+
+    with pytest.raises(runtime_isolation.LandlockUnavailableError):
         runtime_isolation.install_filesystem_guard(tmp_path)
 
 

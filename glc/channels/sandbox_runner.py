@@ -25,6 +25,26 @@ _MAX_LINE_BYTES = 1_000_000
 _RUNTIME_UID = 65_532
 _RUNTIME_GID = 65_532
 _RUNTIME_HOME = Path("/tmp/glc-adapter")
+_SHARED_WRITABLE_DIRS = (Path("/tmp"), Path("/var/tmp"), Path("/dev/shm"))
+
+
+def _prepare_runtime_filesystem() -> bool:
+    """Leave only the private runtime directory writable by adapter UID."""
+
+    runtime_dirs = (_RUNTIME_HOME, _RUNTIME_HOME / "config", _RUNTIME_HOME / "tmp")
+    if not hasattr(os, "geteuid") or os.geteuid() != 0:
+        for path in runtime_dirs:
+            path.mkdir(parents=True, exist_ok=True, mode=0o700)
+        return False
+
+    for path in runtime_dirs:
+        path.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chown(path, _RUNTIME_UID, _RUNTIME_GID)
+        path.chmod(0o700)
+    for path in _SHARED_WRITABLE_DIRS:
+        if path.exists():
+            path.chmod(0o755)
+    return True
 
 
 def _drop_privileges() -> None:
@@ -48,14 +68,18 @@ def _harden_runtime() -> None:
             "TMPDIR": str(_RUNTIME_HOME / "tmp"),
         }
     )
+    permission_fallback_ready = _prepare_runtime_filesystem()
     _drop_privileges()
-    (_RUNTIME_HOME / "config").mkdir(parents=True, exist_ok=True, mode=0o700)
-    (_RUNTIME_HOME / "tmp").mkdir(parents=True, exist_ok=True, mode=0o700)
 
     from glc.security.process_guard import install_process_guard
     from glc.security.runtime_isolation import install_kernel_isolation
 
-    install_kernel_isolation(_RUNTIME_HOME)
+    # Modal's gVisor kernel currently reports Landlock as ENOSYS. Directory
+    # ownership above preserves the single writable ephemeral root there;
+    # every other isolation error, including seccomp failure, remains fatal.
+    install_kernel_isolation(
+        _RUNTIME_HOME, allow_missing_landlock=permission_fallback_ready
+    )
     install_process_guard()
 
 

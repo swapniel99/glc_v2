@@ -35,6 +35,25 @@ def _payload(*, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _image_mounts(image: Any) -> list[str]:
+    raw = next(value for key, value in vars(image).items() if key.startswith("_sync_original_"))
+    mounts: list[str] = []
+    while True:
+        dependencies = raw._deps()
+        mounts.extend(repr(item) for item in dependencies if type(item).__name__ == "_Mount")
+        parents = [item for item in dependencies if type(item).__name__ == "_Image"]
+        if not parents:
+            return mounts
+        raw = parents[0]
+
+
+def test_function_images_mount_required_lockfile():
+    import modal_app
+
+    for image in (modal_app.gateway_image, modal_app.policy_image):
+        assert any("remote_path=PurePosixPath('/root/uv.lock')" in item for item in _image_mounts(image))
+
+
 def test_policy_service_alone_holds_capability_secret_and_no_volume():
     import modal_app
 

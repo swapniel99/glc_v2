@@ -52,6 +52,7 @@ gateway_image = (
     .env({"GLC_CONFIG_DIR": "/data/glc"})
     .add_local_dir(str(LOCAL_GLC), remote_path="/root/glc")
     .add_local_file(str(PYPROJECT), remote_path="/root/pyproject.toml")
+    .add_local_file(str(UV_LOCK), remote_path="/root/uv.lock")
 )
 
 # Sandboxes receive only adapter runtime dependencies and copied, read-only
@@ -107,6 +108,7 @@ policy_image = (
     )
     .env({"GLC_CONFIG_DIR": "/tmp/glc-policy", "GLC_ENV": "production"})
     .add_local_dir(str(LOCAL_GLC), remote_path="/root/glc")
+    .add_local_file(str(UV_LOCK), remote_path="/root/uv.lock")
 )
 
 # Persistent gateway state. Audit and cost data have separate Volumes owned

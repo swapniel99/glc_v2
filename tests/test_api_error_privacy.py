@@ -164,6 +164,7 @@ def test_batch_hides_unexpected_error(app_client, install_token, caplog, monkeyp
 
 @pytest.mark.asyncio
 async def test_image_fetch_hides_upstream_error(monkeypatch, caplog):
+    monkeypatch.setenv("GLC_IMAGE_URL_ALLOWLIST", "1.1.1.1")
     real_client = httpx.AsyncClient
 
     def handler(request: httpx.Request) -> httpx.Response:

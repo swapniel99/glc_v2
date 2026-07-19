@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from urllib.parse import urlsplit
+
 import httpx
 import pytest
 from fastapi import HTTPException
@@ -11,6 +13,26 @@ from glc.routes import chat
 
 def _image_message(url: str) -> list[dict]:
     return [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": url}}]}]
+
+
+def _allow(monkeypatch, *hosts: str) -> None:
+    monkeypatch.setenv("GLC_IMAGE_URL_ALLOWLIST", ",".join(hosts))
+
+
+@pytest.mark.asyncio
+async def test_image_fetch_fails_closed_without_allowlist(monkeypatch):
+    monkeypatch.delenv("GLC_IMAGE_URL_ALLOWLIST", raising=False)
+
+    with pytest.raises(HTTPException, match="not allowlisted"):
+        await chat._resolve_image_urls(_image_message("https://1.1.1.1/image.png"))
+
+
+@pytest.mark.asyncio
+async def test_image_fetch_rejects_unlisted_public_host(monkeypatch):
+    _allow(monkeypatch, "images.example.test")
+
+    with pytest.raises(HTTPException, match="not allowlisted"):
+        await chat._resolve_image_urls(_image_message("https://1.1.1.1/image.png"))
 
 
 @pytest.mark.asyncio
@@ -25,13 +47,17 @@ def _image_message(url: str) -> list[dict]:
         "http://[fe80::1]/image.png",
     ],
 )
-async def test_image_fetch_rejects_non_public_ip_addresses(url):
+async def test_image_fetch_rejects_non_public_ip_addresses(url, monkeypatch):
+    _allow(monkeypatch, urlsplit(url).hostname)
+
     with pytest.raises(HTTPException, match="public IP"):
         await chat._resolve_image_urls(_image_message(url))
 
 
 @pytest.mark.asyncio
 async def test_image_fetch_rejects_hostname_with_private_dns_result(monkeypatch):
+    _allow(monkeypatch, "images.example.test")
+
     def private_dns(*args, **kwargs):
         return [(2, 1, 6, "", ("fd00::1", 0, 0, 0))]
 
@@ -43,6 +69,8 @@ async def test_image_fetch_rejects_hostname_with_private_dns_result(monkeypatch)
 
 @pytest.mark.asyncio
 async def test_image_fetch_rechecks_redirect_destination(monkeypatch):
+    _allow(monkeypatch, "1.1.1.1", "127.0.0.1")
+
     calls = []
     real_client = httpx.AsyncClient
 
@@ -64,6 +92,8 @@ async def test_image_fetch_rechecks_redirect_destination(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_image_fetch_allows_public_destination(monkeypatch):
+    _allow(monkeypatch, "1.1.1.1")
+
     real_client = httpx.AsyncClient
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -83,3 +113,17 @@ async def test_image_fetch_allows_public_destination(monkeypatch):
     messages = await chat._resolve_image_urls(_image_message("https://1.1.1.1/image.png"))
 
     assert messages[0]["content"][0]["image_url"]["url"] == "data:image/png;base64,aW1hZ2UtYnl0ZXM="
+
+
+@pytest.mark.asyncio
+async def test_image_fetch_allows_wildcard_subdomain(monkeypatch):
+    _allow(monkeypatch, "*.example.test")
+
+    def public_dns(*args, **kwargs):
+        return [(2, 1, 6, "", ("1.1.1.1", 0))]
+
+    monkeypatch.setattr(chat.socket, "getaddrinfo", public_dns)
+
+    assert await chat._validate_image_url("https://cdn.example.test/image.png") == "1.1.1.1"
+    with pytest.raises(HTTPException, match="not allowlisted"):
+        await chat._validate_image_url("https://example.test/image.png")

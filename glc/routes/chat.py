@@ -310,6 +310,22 @@ def _is_public_ip(address: str) -> bool:
         return False
 
 
+def _image_host_allowed(host: str) -> bool:
+    """Match host against exact or ``*.example.com`` allowlist entries."""
+    host = host.lower().rstrip(".")
+    for entry in os.getenv("GLC_IMAGE_URL_ALLOWLIST", "").split(","):
+        entry = entry.strip().lower().rstrip(".")
+        if not entry:
+            continue
+        if entry.startswith("*."):
+            suffix = entry[2:]
+            if suffix and host.endswith(f".{suffix}"):
+                return True
+        elif host == entry:
+            return True
+    return False
+
+
 async def _validate_image_url(url: str) -> str:
     """Allow only public http(s) endpoints and return a safe address to connect."""
     parsed = urlsplit(url)
@@ -323,6 +339,8 @@ async def _validate_image_url(url: str) -> str:
         raise HTTPException(400, "image URL has an invalid port")
 
     host = parsed.hostname
+    if not _image_host_allowed(host):
+        raise HTTPException(400, "image URL host is not allowlisted")
     try:
         addresses = [str(ipaddress.ip_address(host))]
     except ValueError:

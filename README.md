@@ -11,6 +11,15 @@ The full brief is in [`ASSIGNMENT.md`](ASSIGNMENT.md).
 
 ## Run it
 
+Remote image fetching fails closed. Allow only required image hosts with
+comma-separated list; `*.example.com` matches subdomains but not apex:
+
+```sh
+export GLC_IMAGE_URL_ALLOWLIST='images.example.com,*.trusted-cdn.example'
+```
+
+Set same variable when running `modal deploy modal_app.py`.
+
 This is a `uv` project.
 
 ```sh

@@ -78,11 +78,16 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
   - `/v1/chat` accepts image blocks in `messages`.
   - `/v1/vision` converts its caller-supplied image URL into an image block, then uses the same chat resolver.
   - Accepts only `http(s)` URLs with a host; rejects URL credentials and invalid ports.
-  - Resolves every hostname and rejects any private, loopback, link-local, reserved, or otherwise non-global IPv4/IPv6 result.
+  - Limits hostname resolution to allowlisted image hosts defined by `GLC_IMAGE_URL_ALLOWLIST` (supporting exact match and `*.domain` wildcard subdomains).
+  - Resolves every allowed hostname and rejects any private, loopback, link-local, reserved, or otherwise non-global IPv4/IPv6 result.
   - Pins each connection to validated address while preserving `Host` and TLS SNI; disables proxy-environment use.
   - Re-validates each redirect destination and caps redirects at five.
   - Returns generic image-retrieval error for upstream fetch failures; raw detail stays server-side.
-  - [`tests/test_image_url_ssrf.py`](tests/test_image_url_ssrf.py) covers private IPv4/IPv6, private DNS, redirect revalidation, and public-image success. [`test_image_fetch_hides_upstream_error`](tests/test_api_error_privacy.py) verifies error-detail redaction.
+  - [`README.md`](README.md) and [`modal_app.py`](modal_app.py) propagate the `GLC_IMAGE_URL_ALLOWLIST` environment variable.
+  - [`tests/test_image_url_ssrf.py`](tests/test_image_url_ssrf.py) covers allowlist matching, wildcard subdomains, private IPv4/IPv6, private DNS, redirect revalidation, and public-image success. [`test_image_fetch_hides_upstream_error`](tests/test_api_error_privacy.py) verifies error-detail redaction and allowlist environment mocking.
+- Deployment verification: gateway deployed on Modal with `GLC_IMAGE_URL_ALLOWLIST='images.example.com,*.trusted-cdn.example,1.1.1.1'`:
+  - Request with allowlisted host `1.1.1.1` passed allowlist check and returned `502` with `{"detail":"image retrieval failed"}` due to connection failure.
+  - Request with unlisted host `2.2.2.2` failed allowlist check and returned `400` with `{"detail":"image URL host is not allowlisted"}`.
 
 ## F-005: Upstream Error Detail Disclosure
 

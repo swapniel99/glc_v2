@@ -248,7 +248,7 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
 - Finding: `log_call()` accepted arbitrary token counts and statuses, and Modal gateway replicas wrote cost SQLite state without an authenticated writer boundary. Malformed provider usage could also alter in-memory budget counters before persistence.
 - Reference invariant(s): 7, 8.
 - Attacker role: Compromised adapter.
-- Status: Fixed locally; deployment re-check pending.
+- Status: Fixed and deployed; live adversarial re-check pending.
 - Evidence / fix:
   - [`glc/db.py`](glc/db.py) validates strict record fields and types, rejects negative or excessive metrics and unknown statuses, and HMAC-signs every record over all fields plus a timestamp and random nonce.
   - Signed appends verify with constant-time comparison. A unique writer nonce prevents replay; writer signatures and nonces are not returned by `/v1/calls`.
@@ -258,5 +258,5 @@ Only invariants from [REFERENCE.md](REFERENCE.md) Section 5 appear below.
 - Verification record:
   - [`tests/test_cost_ledger.py`](tests/test_cost_ledger.py) covers negative, overflow, boolean and string token counts, arbitrary status, signature tampering, replay, proof redaction, poisoned provider results, Modal Secret/Volume separation, writer verification, and gateway proxy signing.
   - Focused cost and gateway compatibility suite: 42 passed.
-  - Full suite with an explicit writable test ledger (`GLC_GATEWAY_DB=/private/tmp/glc-v2-full-suite-leak10-final.sqlite`): 335 passed.
-  - Deployment re-check remains pending.
+  - Full suite with an explicit writable test ledger (`GLC_GATEWAY_DB=/private/tmp/glc-v2-deploy-final.sqlite`): 336 passed.
+  - Modal deployment smoke-check on 2026-07-19: `/healthz` returned 200, the root returned 200, the protected `/v1/status` route returned 401 without credentials, and post-fix logs contained no exceptions.
